@@ -144,11 +144,11 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		d.save(true)
 	}
 	if d.browseClk.Clicked(gtx) {
-		go func() {
-			if paths, ok := pickFiles(a.host.HWND(), "选择私钥文件"); ok && len(paths) > 0 {
-				a.Post(func() { d.keyPath.SetText(paths[0]) })
+		pickFiles(a, "选择私钥文件", func(paths []string) {
+			if len(paths) > 0 {
+				d.keyPath.SetText(paths[0])
 			}
-		}()
+		})
 	}
 	if d.jumpClk.Clicked(gtx) {
 		items := []MenuItem{{Label: "无", Checked: d.p.JumpID == "", Do: func() { d.p.JumpID = "" }}}
@@ -282,6 +282,9 @@ type prompter struct {
 }
 
 func (p *prompter) HostKey(host, keyType, fingerprint string, changed bool) bool {
+	if p.a.unattended {
+		return true
+	}
 	ch := make(chan bool, 1)
 	p.a.Post(func() {
 		d := &confirmDialog{
@@ -304,6 +307,9 @@ func (p *prompter) HostKey(host, keyType, fingerprint string, changed bool) bool
 }
 
 func (p *prompter) Password(title string) (string, bool, bool) {
+	if p.a.unattended {
+		return "", false, false
+	}
 	type res struct {
 		pw   string
 		save bool
@@ -323,6 +329,9 @@ func (p *prompter) Password(title string) (string, bool, bool) {
 }
 
 func (p *prompter) Passphrase(keyPath string) (string, bool) {
+	if p.a.unattended {
+		return "", false
+	}
 	type res struct {
 		pp string
 		ok bool
@@ -340,6 +349,9 @@ func (p *prompter) Passphrase(keyPath string) (string, bool) {
 }
 
 func (p *prompter) Interactive(title, instruction string, questions []string, echo []bool) ([]string, bool) {
+	if p.a.unattended {
+		return nil, false
+	}
 	type res struct {
 		ans []string
 		ok  bool
@@ -699,11 +711,7 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		d.Submit(a)
 	}
 	if d.browseClk.Clicked(gtx) {
-		go func() {
-			if dir, ok := pickFolder(a.host.HWND(), "选择默认下载位置"); ok {
-				a.Post(func() { d.downloadDir.SetText(dir) })
-			}
-		}()
+		pickFolder(a, "选择默认下载位置", func(dir string) { d.downloadDir.SetText(dir) })
 	}
 	fld := func(weight float32, f *Field) layout.FlexChild {
 		return layout.Flexed(weight, func(gtx layout.Context) layout.Dimensions { return f.Layout(gtx, th) })

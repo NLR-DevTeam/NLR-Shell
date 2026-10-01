@@ -17,6 +17,7 @@ import (
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
+	"gioui.org/io/transfer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -291,31 +292,22 @@ func (fv *filesView) download(es []sshx.Entry, dir string) {
 }
 
 func (fv *filesView) downloadTo(es []sshx.Entry) {
-	a := fv.a
-	go func() {
-		dir, ok := pickFolder(a.host.HWND(), "选择下载位置")
-		if !ok {
-			return
-		}
-		a.Post(func() { fv.download(es, dir) })
-	}()
+	// The entries are copied: the panel may have moved on by the time the
+	// directory is picked.
+	es = append([]sshx.Entry(nil), es...)
+	pickFolder(fv.a, "选择下载位置", func(dir string) { fv.download(es, dir) })
 }
 
 func (fv *filesView) pickUpload(folder bool) {
-	a := fv.a
-	go func() {
-		var paths []string
-		if folder {
-			if dir, ok := pickFolder(a.host.HWND(), "选择要上传的文件夹"); ok {
-				paths = []string{dir}
-			}
-		} else {
-			paths, _ = pickFiles(a.host.HWND(), "选择要上传的文件")
-		}
+	if folder {
+		pickFolder(fv.a, "选择要上传的文件夹", func(dir string) { fv.upload([]string{dir}) })
+		return
+	}
+	pickFiles(fv.a, "选择要上传的文件", func(paths []string) {
 		if len(paths) > 0 {
-			a.Post(func() { fv.upload(paths) })
+			fv.upload(paths)
 		}
-	}()
+	})
 }
 
 // upload sends local paths to the current directory, asking before
@@ -669,7 +661,9 @@ func (fv *filesView) events(gtx layout.Context) {
 			key.Filter{Focus: fv, Name: key.NameF5},
 			key.Filter{Focus: fv, Name: key.NameEscape},
 			key.Filter{Focus: fv, Name: "A", Required: key.ModCtrl},
+			key.Filter{Focus: fv, Name: "V", Required: key.ModCtrl},
 			key.Filter{Focus: &fv.pathField.Editor, Name: key.NameEscape},
+			transfer.TargetFilter{Target: fv, Type: "application/text"},
 		)
 		if !ok {
 			break
@@ -681,8 +675,36 @@ func (fv *filesView) events(gtx layout.Context) {
 			if e.State == key.Press {
 				fv.key(gtx, e)
 			}
+		case transfer.DataEvent:
+			// A pasted file list from the file manager, the Linux
+			// stand-in for dragging files onto the window.
+			if rc := e.Open(); rc != nil {
+				b, _ := io.ReadAll(io.LimitReader(rc, 1<<20))
+				rc.Close()
+				fv.pastePaths(string(b))
+			}
 		}
 	}
+}
+
+// pastePaths uploads the local files named in copyText, which is either a
+// text/uri-list or a list of paths as file managers put it on the clipboard.
+func (fv *filesView) pastePaths(copyText string) {
+	var paths []string
+	for _, p := range parseLocalPaths(copyText) {
+		if _, err := os.Lstat(p); err == nil {
+			paths = append(paths, p)
+		}
+	}
+	switch {
+	case len(paths) == 0:
+		fv.a.Toast(toastInfo, "剪贴板中没有本地文件路径")
+		return
+	case fv.sv.sess.State() != sshx.StateConnected:
+		fv.a.Toast(toastError, "未连接")
+		return
+	}
+	fv.upload(paths)
 }
 
 func (fv *filesView) key(gtx layout.Context, e key.Event) {
@@ -743,6 +765,8 @@ func (fv *filesView) key(gtx layout.Context, e key.Event) {
 		fv.a.refocus = true
 	case "A":
 		fv.selectRange(0, n-1)
+	case "V":
+		gtx.Execute(clipboard.ReadCmd{Tag: fv})
 	}
 }
 

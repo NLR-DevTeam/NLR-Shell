@@ -69,7 +69,7 @@ func mix(a, b color.NRGBA, t float32) color.NRGBA {
 func NewTheme(monoFamily string) *Theme {
 	th := &Theme{
 		Shaper: text.NewShaper(text.WithCollection(gofont.Collection())),
-		Face:   "Microsoft YaHei UI, Segoe UI, PingFang SC, sans-serif",
+		Face:   uiFont,
 
 		Bg0:      rgb(0x0b0d10),
 		Bg1:      rgb(0x101317),
@@ -112,9 +112,9 @@ func NewTheme(monoFamily string) *Theme {
 // SetMono changes the terminal font family, keeping sensible fallbacks.
 func (th *Theme) SetMono(family string) {
 	if family == "" {
-		family = "Cascadia Mono"
+		family = defaultMono
 	}
-	th.Mono = font.Typeface(family + ", Cascadia Mono, Consolas, Microsoft YaHei UI, Go Mono, monospace")
+	th.Mono = font.Typeface(family + ", " + monoFallbacks)
 }
 
 // TermColor resolves a palette index to a color.

@@ -455,6 +455,9 @@ func (v *TermView) update(gtx layout.Context, top int) {
 		case key.FocusEvent:
 			if e.Focus != v.focused {
 				v.focused = e.Focus
+				// Enable the input method while the terminal has the
+				// keyboard; Gio's editor widgets do the same.
+				gtx.Execute(key.SoftKeyboardCmd{Show: e.Focus})
 				v.blinkStart = gtx.Now
 				if v.Send != nil {
 					if b := v.term.EncodeFocus(e.Focus); b != nil {
@@ -754,6 +757,13 @@ func (v *TermView) Layout(gtx layout.Context) layout.Dimensions {
 		v.drawRowText(gtx, cells, y, bg, fg)
 	}
 
+	// The caret tracks the cursor cell even while the cursor is hidden or
+	// scrolled out of view: the input method anchors its preedit and
+	// candidate window to it.
+	caretRow := min(max(curY, 0), max(rows-1, 0))
+	caretCol := min(max(curX, 0), max(tcols-1, 0))
+	v.caretPx = image.Pt(caretCol*v.cellW, caretRow*v.cellH)
+
 	// Cursor.
 	if curVisible && curY >= 0 && curY < rows && curX < tcols {
 		on := true
@@ -790,19 +800,24 @@ func (v *TermView) Layout(gtx layout.Context) layout.Dimensions {
 				v.flushGlyphs(gtx, y, v.th.Bg0)
 			}
 		}
-		v.caretPx = image.Pt(x, y)
 	}
 
 	// IME preedit text is shown inline at the cursor.
 	if len(v.ime) > 0 {
 		x, y := v.caretPx.X, v.caretPx.Y
+		// Measure the text alone. The widget pads its size to the minimum
+		// constraint, which here is the whole terminal, and the overflow
+		// check below would then pin the composition to the line start.
+		mgtx := gtx
+		mgtx.Constraints.Min = image.Point{}
 		m := op.Record(gtx.Ops)
-		d := Label{Text: string(v.ime), Size: v.FontSize, Color: v.th.Text, Mono: true}.Layout(gtx, v.th)
+		d := Label{Text: string(v.ime), Size: v.FontSize, Color: v.th.Text, Mono: true}.Layout(mgtx, v.th)
 		call := m.Stop()
 		if x+d.Size.X > cols*v.cellW {
 			x = max(cols*v.cellW-d.Size.X, 0)
 		}
-		fill(gtx.Ops, image.Rect(x, y, x+d.Size.X, y+v.cellH), v.th.Bg3)
+		// Only underline the composition: a filled background makes the
+		// preedit look like a separate staging box.
 		fill(gtx.Ops, image.Rect(x, y+v.cellH-max(gtx.Dp(1), 1), x+d.Size.X, y+v.cellH), v.th.Accent)
 		st := op.Offset(image.Pt(x, y)).Push(gtx.Ops)
 		call.Add(gtx.Ops)
@@ -816,11 +831,7 @@ func (v *TermView) Layout(gtx layout.Context) layout.Dimensions {
 		if st != v.imeSent {
 			v.imeSent = st
 			gtx.Execute(key.SnippetCmd{Tag: v, Snippet: key.Snippet{Range: key.Range{Start: 0, End: len(v.ime)}, Text: st.snip}})
-			gtx.Execute(key.SelectionCmd{Tag: v, Range: key.Range{Start: v.imeCaret, End: v.imeCaret}, Caret: key.Caret{
-				Pos:     f32.Pt(float32(v.padding.X+v.caretPx.X), float32(v.padding.Y+v.caretPx.Y+v.ascent)),
-				Ascent:  float32(v.ascent),
-				Descent: float32(v.cellH - v.ascent),
-			}})
+			gtx.Execute(key.SelectionCmd{Tag: v, Range: key.Range{Start: v.imeCaret, End: v.imeCaret}, Caret: v.imeCaretPos()})
 		}
 	} else {
 		v.imeSent = imeState{caret: -1}
@@ -828,6 +839,17 @@ func (v *TermView) Layout(gtx layout.Context) layout.Dimensions {
 
 	v.layoutScrollbar(gtx, size, sbW, ev, hist, top, trows)
 	return layout.Dimensions{Size: size}
+}
+
+// imeCaretPos is the caret in the terminal view's own coordinates. The input
+// router adds the view transform, so the value must not include the view's
+// position in the window.
+func (v *TermView) imeCaretPos() key.Caret {
+	return key.Caret{
+		Pos:     f32.Pt(float32(v.padding.X+v.caretPx.X), float32(v.padding.Y+v.caretPx.Y+v.ascent)),
+		Ascent:  float32(v.ascent),
+		Descent: float32(v.cellH - v.ascent),
+	}
 }
 
 func (v *TermView) cellColors(c term.Cell, bg, fg color.NRGBA) (cfg, cbg color.NRGBA, hasBg bool) {

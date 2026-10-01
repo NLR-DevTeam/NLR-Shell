@@ -174,8 +174,8 @@ func (t *Transfers) UploadAs(local, remote string) {
 	t.start(&transfer{upload: true, name: path.Base(remote), local: local, remote: remote})
 }
 
-// SafeName returns name with characters that Windows does not allow in
-// file names replaced.
+// SafeName returns name with characters that the local file system does not
+// allow in file names replaced.
 func SafeName(name string) string { return safeName(name) }
 
 // Download copies a remote file or directory into localDir. If a file of
@@ -485,21 +485,6 @@ func downloadFile(ctx context.Context, c *sftp.Client, tr *transfer, remote, loc
 	}
 	os.Chtimes(local, time.Now(), fi.ModTime())
 	return nil
-}
-
-// safeName replaces characters that are not allowed in Windows file names.
-func safeName(name string) string {
-	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || strings.ContainsRune(`<>:"/\|?*`, r) {
-			return '_'
-		}
-		return r
-	}, name)
-	name = strings.TrimRight(name, " .")
-	if name == "" {
-		name = "_"
-	}
-	return name
 }
 
 // uniqueLocal returns p, or p with a numeric suffix if p already exists or

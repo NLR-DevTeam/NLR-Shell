@@ -23,7 +23,64 @@
 
 ## 安装
 
-下载 [Releases](https://github.com/NLR-DevTeam/NLR-Shell/releases) 中最新的版本
+下载 [Releases](https://github.com/NLR-DevTeam/NLR-Shell/releases) 中最新的版本即可运行
+
+## 命令行启动参数
+
+如果不带任何参数启动，程序会直接进入图形主界面。如果希望在脚本或终端中快速直达远程会话，可使用 `-connect`：
+
+```sh
+NLRShell -connect [user@]host[:port] [-identity 私钥文件] [-password 密码] [-passphrase 私钥口令]
+```
+
+- 该模式专为免交互设计：会自动接受并信任主机密钥
+- 如果缺少认证凭据，命令将直接退出并报错
+
+## 源码构建
+
+### Windows
+
+推荐使用 PowerShell 运行随附脚本：
+
+```powershell
+.\build.ps1            # 编译 Release 版本
+.\build.ps1 -Test      # 编译前执行单元测试
+.\build.ps1 -Console   # 保留控制台窗口输出（便于排查故障）
+```
+
+### Linux
+
+项目基于 Gio UI 开发。由于上游 Gio 目前在 Linux 下存在问题，仓库内附带了针对该问题的补丁（位于 `tools/giopatch`）。
+
+**建议优先使用提供的构建脚本编译**。直接执行 `go build` 虽然也能成功，但会回退到未经打补丁的依赖，Linux 下将保留系统原生标题栏。
+
+构建依赖 cgo 以及 X11 / Wayland 的系统开发库。请先安装编译依赖：
+
+- **Arch Linux**:
+  ```sh
+  sudo pacman -S base-devel libx11 libxkbcommon libxkbcommon-x11 \
+                 libxcursor libxfixes wayland libglvnd mesa
+  ```
+- **Debian / Ubuntu**:
+  ```sh
+  sudo apt install build-essential pkg-config libx11-dev \
+                   libx11-xcb-dev libxcursor-dev libxfixes-dev libxkbcommon-dev \
+                   libxkbcommon-x11-dev libwayland-dev libegl-dev libgles-dev
+  ```
+
+依赖就绪后运行：
+
+```sh
+./build.sh             # 编译产物为当前目录下的 ./NLRShell
+./build.sh --test      # 编译前执行测试
+```
+
+## Linux 平台注意事项
+
+- **配置路径**：配置文件存放在 `$XDG_CONFIG_HOME/nlrshell`（默认即 `~/.config/nlrshell`）。如果你需要便携模式，可以指定环境变量 `NLRSHELL_DATA` 来自定义路径（Windows 下路径默认为 `%APPDATA%\NLR Shell`）。
+- **凭据安全**：Windows 下密码和密钥口令直接托管给 DPAPI；Linux 环境下，密码会保存在配置目录的 `secret.key` 中（文件权限自动设为 `0600`），并通过 XChaCha20-Poly1305 加密保存，请妥善保管该密钥文件。
+- **SSH Agent**：Linux 下依赖 `SSH_AUTH_SOCK` 环境变量与系统的 `ssh-agent` 通信。
+- **桌面环境兼容性**：目前界面在 KDE Plasma 环境下测试最为充分；在其他桌面环境（如 GNOME、XFCE 或各类平铺式 WM）下自绘窗体可能会有渲染细节差异。
 
 ## 支持
 

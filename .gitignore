@@ -1,6 +1,7 @@
 # Build output
 *.exe
 *.exe~
+/NLRShell
 
 # Off-screen renderer output (cmd/shot)
 /shots/

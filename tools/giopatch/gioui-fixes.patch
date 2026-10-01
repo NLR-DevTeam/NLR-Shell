@@ -1,0 +1,1156 @@
+--- a/app/os_wayland.go
++++ b/app/os_wayland.go
+@@ -17,6 +17,7 @@
+ 	"strconv"
+ 	"sync"
+ 	"time"
++	"unicode/utf8"
+ 	"unsafe"
+ 
+ 	syscall "golang.org/x/sys/unix"
+@@ -60,6 +61,113 @@
+ #include "wayland_xdg_shell.h"
+ #include "wayland_xdg_decoration.h"
+ 
++// The cursor-shape protocol lets the compositor draw the pointer cursor,
++// which is the only way to get the cursor size and theme of the desktop:
++// a cursor loaded by the client has to guess the output scale, and
++// Xcursor picks the closest available image size, which is too large
++// under fractional scaling.
++//
++// The interface below is the wayland-scanner output for cursor-shape-v1,
++// inlined because wayland-scanner is not a build dependency. Only what is
++// needed is kept: the manager's destroy/get_pointer and the device's
++// destroy/set_shape.
++struct wp_cursor_shape_manager_v1;
++struct wp_cursor_shape_device_v1;
++
++extern const struct wl_interface wl_pointer_interface;
++
++// Shape values of wp_cursor_shape_device_v1.set_shape.
++enum {
++	GIO_CURSOR_SHAPE_DEFAULT = 1,
++	GIO_CURSOR_SHAPE_CONTEXT_MENU = 2,
++	GIO_CURSOR_SHAPE_HELP = 3,
++	GIO_CURSOR_SHAPE_POINTER = 4,
++	GIO_CURSOR_SHAPE_PROGRESS = 5,
++	GIO_CURSOR_SHAPE_WAIT = 6,
++	GIO_CURSOR_SHAPE_CELL = 7,
++	GIO_CURSOR_SHAPE_CROSSHAIR = 8,
++	GIO_CURSOR_SHAPE_TEXT = 9,
++	GIO_CURSOR_SHAPE_VERTICAL_TEXT = 10,
++	GIO_CURSOR_SHAPE_ALIAS = 11,
++	GIO_CURSOR_SHAPE_COPY = 12,
++	GIO_CURSOR_SHAPE_MOVE = 13,
++	GIO_CURSOR_SHAPE_NO_DROP = 14,
++	GIO_CURSOR_SHAPE_NOT_ALLOWED = 15,
++	GIO_CURSOR_SHAPE_GRAB = 16,
++	GIO_CURSOR_SHAPE_GRABBING = 17,
++	GIO_CURSOR_SHAPE_E_RESIZE = 18,
++	GIO_CURSOR_SHAPE_N_RESIZE = 19,
++	GIO_CURSOR_SHAPE_NE_RESIZE = 20,
++	GIO_CURSOR_SHAPE_NW_RESIZE = 21,
++	GIO_CURSOR_SHAPE_S_RESIZE = 22,
++	GIO_CURSOR_SHAPE_SE_RESIZE = 23,
++	GIO_CURSOR_SHAPE_SW_RESIZE = 24,
++	GIO_CURSOR_SHAPE_W_RESIZE = 25,
++	GIO_CURSOR_SHAPE_EW_RESIZE = 26,
++	GIO_CURSOR_SHAPE_NS_RESIZE = 27,
++	GIO_CURSOR_SHAPE_NESW_RESIZE = 28,
++	GIO_CURSOR_SHAPE_NWSE_RESIZE = 29,
++	GIO_CURSOR_SHAPE_COL_RESIZE = 30,
++	GIO_CURSOR_SHAPE_ROW_RESIZE = 31,
++	GIO_CURSOR_SHAPE_ALL_SCROLL = 32,
++};
++
++static const struct wl_message gio_cursor_shape_device_requests[] = {
++	{ "destroy", "", NULL },
++	{ "set_shape", "uu", NULL },
++};
++
++static const struct wl_interface gio_cursor_shape_device_interface = {
++	"wp_cursor_shape_device_v1", 1,
++	2, gio_cursor_shape_device_requests,
++	0, NULL,
++};
++
++static const struct wl_interface *gio_cursor_shape_manager_types[] = {
++	&gio_cursor_shape_device_interface,
++	&wl_pointer_interface,
++};
++
++static const struct wl_message gio_cursor_shape_manager_requests[] = {
++	{ "destroy", "", NULL },
++	{ "get_pointer", "no", gio_cursor_shape_manager_types },
++};
++
++static const struct wl_interface gio_cursor_shape_manager_interface = {
++	"wp_cursor_shape_manager_v1", 1,
++	2, gio_cursor_shape_manager_requests,
++	0, NULL,
++};
++
++static struct wp_cursor_shape_manager_v1 *gio_cursor_shape_manager_bind(
++		struct wl_registry *reg, uint32_t name) {
++	return (struct wp_cursor_shape_manager_v1 *)wl_registry_bind(
++		reg, name, &gio_cursor_shape_manager_interface, 1);
++}
++
++static struct wp_cursor_shape_device_v1 *gio_cursor_shape_manager_get_pointer(
++		struct wp_cursor_shape_manager_v1 *m, struct wl_pointer *p) {
++	return (struct wp_cursor_shape_device_v1 *)wl_proxy_marshal_flags(
++		(struct wl_proxy *)m, 1, &gio_cursor_shape_device_interface,
++		wl_proxy_get_version((struct wl_proxy *)m), 0, NULL, p);
++}
++
++static void gio_cursor_shape_device_set_shape(
++		struct wp_cursor_shape_device_v1 *d, uint32_t serial, uint32_t shape) {
++	wl_proxy_marshal_flags((struct wl_proxy *)d, 1, NULL,
++		wl_proxy_get_version((struct wl_proxy *)d), 0, serial, shape);
++}
++
++static void gio_cursor_shape_manager_destroy(struct wp_cursor_shape_manager_v1 *m) {
++	wl_proxy_marshal_flags((struct wl_proxy *)m, 0, NULL,
++		wl_proxy_get_version((struct wl_proxy *)m), WL_MARSHAL_FLAG_DESTROY);
++}
++
++static void gio_cursor_shape_device_destroy(struct wp_cursor_shape_device_v1 *d) {
++	wl_proxy_marshal_flags((struct wl_proxy *)d, 0, NULL,
++		wl_proxy_get_version((struct wl_proxy *)d), WL_MARSHAL_FLAG_DESTROY);
++}
++
+ extern const struct wl_registry_listener gio_registry_listener;
+ extern const struct wl_surface_listener gio_surface_listener;
+ extern const struct xdg_surface_listener gio_xdg_surface_listener;
+@@ -88,6 +196,7 @@
+ 	shm               *C.struct_wl_shm
+ 	dataDeviceManager *C.struct_wl_data_device_manager
+ 	decor             *C.struct_zxdg_decoration_manager_v1
++	cursorShape       *C.struct_wp_cursor_shape_manager_v1
+ 	seat              *wlSeat
+ 	xkb               *xkb.Context
+ 	outputMap         map[C.uint32_t]*C.struct_wl_output
+@@ -104,10 +213,13 @@
+ }
+ 
+ type wlSeat struct {
+-	disp     *wlDisplay
+-	seat     *C.struct_wl_seat
+-	name     C.uint32_t
+-	pointer  *C.struct_wl_pointer
++	disp    *wlDisplay
++	seat    *C.struct_wl_seat
++	name    C.uint32_t
++	pointer *C.struct_wl_pointer
++	// shapeDev draws the cursor through the compositor; nil if the
++	// cursor shape protocol is unavailable.
++	shapeDev *C.struct_wp_cursor_shape_device_v1
+ 	touch    *C.struct_wl_touch
+ 	keyboard *C.struct_wl_keyboard
+ 	im       *C.struct_zwp_text_input_v3
+@@ -117,9 +229,10 @@
+ 	// The most recent pointer enter serial.
+ 	pointerSerial C.uint32_t
+ 
+-	pointerFocus  *window
+-	keyboardFocus *window
+-	touchFoci     map[C.int32_t]*window
++	pointerFocus   *window
++	keyboardFocus  *window
++	textInputFocus *window
++	touchFoci      map[C.int32_t]*window
+ 
+ 	// Clipboard support.
+ 	dataDev *C.struct_wl_data_device
+@@ -152,14 +265,17 @@
+ }
+ 
+ type window struct {
+-	w          *callbacks
+-	disp       *wlDisplay
+-	surf       *C.struct_wl_surface
+-	wmSurf     *C.struct_xdg_surface
+-	topLvl     *C.struct_xdg_toplevel
+-	decor      *C.struct_zxdg_toplevel_decoration_v1
+-	ppdp, ppsp float32
+-	scroll     struct {
++	w      *callbacks
++	disp   *wlDisplay
++	surf   *C.struct_wl_surface
++	wmSurf *C.struct_xdg_surface
++	topLvl *C.struct_xdg_toplevel
++	decor  *C.struct_zxdg_toplevel_decoration_v1
++	// decorWanted/decorSet track the decoration mode requested through
++	// zxdg_toplevel_decoration_v1, so the same mode is not sent twice.
++	decorWanted, decorSet bool
++	ppdp, ppsp            float32
++	scroll                struct {
+ 		time  time.Duration
+ 		steps image.Point
+ 		dist  f32.Point
+@@ -168,9 +284,23 @@
+ 	lastPos     f32.Point
+ 	lastTouch   f32.Point
+ 
++	// Text input (IME) state. The compositor forwards the enabled state
++	// to the input method, which answers with preedit and commit strings.
++	ime struct {
++		shown   bool
++		hint    key.InputHint
++		preedit string
++		commit  string
++	}
++
+ 	cursor struct {
+ 		theme  *C.struct_wl_cursor_theme
+ 		cursor *C.struct_wl_cursor
++		// name is the cursor requested by the application; edge is the
++		// resize edge of an active system gesture, or zero. Both are
++		// reported to the compositor through the cursor shape protocol.
++		name pointer.Cursor
++		edge C.uint32_t
+ 		// system is the active cursor for system gestures
+ 		// such as border resizes and window moves. It
+ 		// is nil if the pointer is not in a system gesture
+@@ -486,6 +616,10 @@
+ 		C.zwp_text_input_v3_destroy(s.im)
+ 		s.im = nil
+ 	}
++	if s.shapeDev != nil {
++		C.gio_cursor_shape_device_destroy(s.shapeDev)
++		s.shapeDev = nil
++	}
+ 	if s.pointer != nil {
+ 		C.wl_pointer_release(s.pointer)
+ 	}
+@@ -515,7 +649,14 @@
+ 	case s.pointer == nil && caps&C.WL_SEAT_CAPABILITY_POINTER != 0:
+ 		s.pointer = C.wl_seat_get_pointer(s.seat)
+ 		C.wl_pointer_add_listener(s.pointer, &C.gio_pointer_listener, unsafe.Pointer(s.seat))
++		if d := s.disp; d.cursorShape != nil {
++			s.shapeDev = C.gio_cursor_shape_manager_get_pointer(d.cursorShape, s.pointer)
++		}
+ 	case s.pointer != nil && caps&C.WL_SEAT_CAPABILITY_POINTER == 0:
++		if s.shapeDev != nil {
++			C.gio_cursor_shape_device_destroy(s.shapeDev)
++			s.shapeDev = nil
++		}
+ 		C.wl_pointer_release(s.pointer)
+ 		s.pointer = nil
+ 	}
+@@ -563,6 +704,34 @@
+ 		w.size = image.Pt(int(width), int(height))
+ 		w.updateOpaqueRegion()
+ 	}
++	// The compositor decides the window state: it maximizes, restores or
++	// fullscreens windows on its own, for example while a maximized window
++	// is dragged. Report it, or the application keeps asking for the mode
++	// it requested last and controls such as a maximize button stop
++	// working.
++	mode := Windowed
++	for _, s := range wlStates(states) {
++		switch s {
++		case C.XDG_TOPLEVEL_STATE_FULLSCREEN:
++			mode = Fullscreen
++		case C.XDG_TOPLEVEL_STATE_MAXIMIZED:
++			if mode != Fullscreen {
++				mode = Maximized
++			}
++		}
++	}
++	if w.config.Mode != mode {
++		w.config.Mode = mode
++		w.ProcessEvent(ConfigEvent{Config: w.config})
++	}
++}
++
++// wlStates returns the uint32 elements of a Wayland array.
++func wlStates(a *C.struct_wl_array) []C.uint32_t {
++	if a == nil || a.data == nil || a.size == 0 {
++		return nil
++	}
++	return unsafe.Slice((*C.uint32_t)(a.data), int(a.size)/int(unsafe.Sizeof(C.uint32_t(0))))
+ }
+ 
+ //export gio_onToplevelDecorationConfigure
+@@ -694,9 +863,10 @@
+ 		d.wm = (*C.struct_xdg_wm_base)(C.wl_registry_bind(reg, name, &C.xdg_wm_base_interface, 1))
+ 	case "zxdg_decoration_manager_v1":
+ 		d.decor = (*C.struct_zxdg_decoration_manager_v1)(C.wl_registry_bind(reg, name, &C.zxdg_decoration_manager_v1_interface, 1))
+-		// TODO: Implement and test text-input support.
+-		/*case "zwp_text_input_manager_v3":
+-		d.imm = (*C.struct_zwp_text_input_manager_v3)(C.wl_registry_bind(reg, name, &C.zwp_text_input_manager_v3_interface, 1))*/
++	case "wp_cursor_shape_manager_v1":
++		d.cursorShape = C.gio_cursor_shape_manager_bind(reg, name)
++	case "zwp_text_input_manager_v3":
++		d.imm = (*C.struct_zwp_text_input_manager_v3)(C.wl_registry_bind(reg, name, &C.zwp_text_input_manager_v3_interface, 1))
+ 	case "wl_data_device_manager":
+ 		d.dataDeviceManager = (*C.struct_wl_data_device_manager)(C.wl_registry_bind(reg, name, &C.wl_data_device_manager_interface, 3))
+ 		d.bindDataDevice()
+@@ -1059,6 +1229,18 @@
+ 	cnf := w.config
+ 	cnf.apply(cfg, options)
+ 	w.config.decoHeight = cnf.decoHeight
++	// Ask the compositor for the decoration mode the application wants:
++	// without set_mode it keeps its default, which is server-side
++	// decorations on most compositors, and Decorated(false) would be
++	// silently ignored.
++	if w.decor != nil && (!w.decorSet || w.decorWanted != cnf.Decorated) {
++		w.decorSet, w.decorWanted = true, cnf.Decorated
++		mode := C.ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE
++		if cnf.Decorated {
++			mode = C.ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
++		}
++		C.zxdg_toplevel_decoration_v1_set_mode(w.decor, C.uint32_t(mode))
++	}
+ 
+ 	switch cnf.Mode {
+ 	case Fullscreen:
+@@ -1169,6 +1351,7 @@
+ }
+ 
+ func (w *window) SetCursor(cursor pointer.Cursor) {
++	w.cursor.name = cursor
+ 	w.cursor.cursor = w.loadCursor(cursor)
+ 	w.updateCursor()
+ }
+@@ -1183,6 +1366,16 @@
+ }
+ 
+ func (w *window) setCursor(pointer *C.struct_wl_pointer, serial C.uint32_t) {
++	if s := w.disp.seat; s != nil && s.shapeDev != nil {
++		name := w.cursor.name
++		if w.cursor.edge != 0 {
++			name = edgeCursor(w.cursor.edge)
++		}
++		if !cursorHidden(name) {
++			C.gio_cursor_shape_device_set_shape(s.shapeDev, serial, C.uint32_t(cursorShape(name)))
++			return
++		}
++	}
+ 	c := w.cursor.system
+ 	if c == nil {
+ 		c = w.cursor.cursor
+@@ -1203,6 +1396,88 @@
+ 	C.wl_surface_commit(w.cursor.surf)
+ }
+ 
++// edgeCursor is the cursor shown while resizing through a window edge.
++func edgeCursor(edge C.uint32_t) pointer.Cursor {
++	switch edge {
++	case C.XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT:
++		return pointer.CursorNorthWestResize
++	case C.XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT:
++		return pointer.CursorNorthEastResize
++	case C.XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT:
++		return pointer.CursorSouthWestResize
++	case C.XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT:
++		return pointer.CursorSouthEastResize
++	case C.XDG_TOPLEVEL_RESIZE_EDGE_TOP:
++		return pointer.CursorNorthResize
++	case C.XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM:
++		return pointer.CursorSouthResize
++	case C.XDG_TOPLEVEL_RESIZE_EDGE_LEFT:
++		return pointer.CursorWestResize
++	case C.XDG_TOPLEVEL_RESIZE_EDGE_RIGHT:
++		return pointer.CursorEastResize
++	}
++	return pointer.CursorDefault
++}
++
++// cursorHidden reports whether c hides the pointer. The cursor shape
++// protocol has no hidden shape, so such cursors keep the client-side path.
++func cursorHidden(c pointer.Cursor) bool { return c == pointer.CursorNone }
++
++// cursorShape maps a cursor to its wp_cursor_shape_device_v1 shape value.
++func cursorShape(c pointer.Cursor) C.int {
++	switch c {
++	case pointer.CursorText:
++		return C.GIO_CURSOR_SHAPE_TEXT
++	case pointer.CursorVerticalText:
++		return C.GIO_CURSOR_SHAPE_VERTICAL_TEXT
++	case pointer.CursorPointer:
++		return C.GIO_CURSOR_SHAPE_POINTER
++	case pointer.CursorCrosshair:
++		return C.GIO_CURSOR_SHAPE_CROSSHAIR
++	case pointer.CursorAllScroll:
++		return C.GIO_CURSOR_SHAPE_ALL_SCROLL
++	case pointer.CursorColResize:
++		return C.GIO_CURSOR_SHAPE_COL_RESIZE
++	case pointer.CursorRowResize:
++		return C.GIO_CURSOR_SHAPE_ROW_RESIZE
++	case pointer.CursorGrab:
++		return C.GIO_CURSOR_SHAPE_GRAB
++	case pointer.CursorGrabbing:
++		return C.GIO_CURSOR_SHAPE_GRABBING
++	case pointer.CursorNotAllowed:
++		return C.GIO_CURSOR_SHAPE_NOT_ALLOWED
++	case pointer.CursorWait:
++		return C.GIO_CURSOR_SHAPE_WAIT
++	case pointer.CursorProgress:
++		return C.GIO_CURSOR_SHAPE_PROGRESS
++	case pointer.CursorNorthWestResize:
++		return C.GIO_CURSOR_SHAPE_NW_RESIZE
++	case pointer.CursorNorthEastResize:
++		return C.GIO_CURSOR_SHAPE_NE_RESIZE
++	case pointer.CursorSouthWestResize:
++		return C.GIO_CURSOR_SHAPE_SW_RESIZE
++	case pointer.CursorSouthEastResize:
++		return C.GIO_CURSOR_SHAPE_SE_RESIZE
++	case pointer.CursorNorthSouthResize:
++		return C.GIO_CURSOR_SHAPE_NS_RESIZE
++	case pointer.CursorEastWestResize:
++		return C.GIO_CURSOR_SHAPE_EW_RESIZE
++	case pointer.CursorWestResize:
++		return C.GIO_CURSOR_SHAPE_W_RESIZE
++	case pointer.CursorEastResize:
++		return C.GIO_CURSOR_SHAPE_E_RESIZE
++	case pointer.CursorNorthResize:
++		return C.GIO_CURSOR_SHAPE_N_RESIZE
++	case pointer.CursorSouthResize:
++		return C.GIO_CURSOR_SHAPE_S_RESIZE
++	case pointer.CursorNorthEastSouthWestResize:
++		return C.GIO_CURSOR_SHAPE_NESW_RESIZE
++	case pointer.CursorNorthWestSouthEastResize:
++		return C.GIO_CURSOR_SHAPE_NWSE_RESIZE
++	}
++	return C.GIO_CURSOR_SHAPE_DEFAULT
++}
++
+ func (w *window) resetFling() {
+ 	w.fling.start = false
+ 	w.fling.anim = fling.Animation{}
+@@ -1563,28 +1838,187 @@
+ 
+ //export gio_onTextInputEnter
+ func gio_onTextInputEnter(data unsafe.Pointer, im *C.struct_zwp_text_input_v3, surf *C.struct_wl_surface) {
++	s := callbackLoad(data).(*wlSeat)
++	s.textInputFocus = callbackLoad(unsafe.Pointer(surf)).(*window)
+ }
+ 
+ //export gio_onTextInputLeave
+ func gio_onTextInputLeave(data unsafe.Pointer, im *C.struct_zwp_text_input_v3, surf *C.struct_wl_surface) {
++	s := callbackLoad(data).(*wlSeat)
++	s.textInputFocus = nil
+ }
+ 
+ //export gio_onTextInputPreeditString
+ func gio_onTextInputPreeditString(data unsafe.Pointer, im *C.struct_zwp_text_input_v3, ctxt *C.char, begin, end C.int32_t) {
++	if w := textInputWindow(data); w != nil {
++		w.ime.preedit = C.GoString(ctxt)
++	}
+ }
+ 
+ //export gio_onTextInputCommitString
+ func gio_onTextInputCommitString(data unsafe.Pointer, im *C.struct_zwp_text_input_v3, ctxt *C.char) {
++	if w := textInputWindow(data); w != nil {
++		w.ime.commit = C.GoString(ctxt)
++	}
+ }
+ 
+ //export gio_onTextInputDeleteSurroundingText
+ func gio_onTextInputDeleteSurroundingText(data unsafe.Pointer, im *C.struct_zwp_text_input_v3, before, after C.uint32_t) {
++	// Byte lengths around the cursor for input methods that edit the
++	// surrounding text. Deleting the wrong range is worse than ignoring
++	// the request, so they are not applied.
+ }
+ 
+ //export gio_onTextInputDone
+ func gio_onTextInputDone(data unsafe.Pointer, im *C.struct_zwp_text_input_v3, serial C.uint32_t) {
+ 	s := callbackLoad(data).(*wlSeat)
+ 	s.serial = serial
++	if w := s.textInputFocus; w != nil {
++		w.applyTextInput()
++	}
++}
++
++// textInputWindow returns the window the compositor sends text input to.
++func textInputWindow(data unsafe.Pointer) *window {
++	return callbackLoad(data).(*wlSeat).textInputFocus
++}
++
++// textInput returns the seat's text input object, or nil if the compositor
++// has no text-input-v3 support.
++func (w *window) textInput() *C.struct_zwp_text_input_v3 {
++	if s := w.disp.seat; s != nil {
++		return s.im
++	}
++	return nil
++}
++
++// applyTextInput hands the input method's pending preedit or commit to the
++// editor, following the other platforms.
++func (w *window) applyTextInput() {
++	state := w.w.EditorState()
++	rng := state.compose
++	if rng.Start == -1 {
++		rng = state.Selection.Range
++	}
++	switch {
++	case w.ime.commit != "":
++		w.w.EditorReplace(rng, w.ime.commit)
++		w.w.SetComposingRegion(key.Range{Start: -1, End: -1})
++		pos := min(rng.Start, rng.End) + utf8.RuneCountInString(w.ime.commit)
++		w.w.SetEditorSelection(key.Range{Start: pos, End: pos})
++	case w.ime.preedit != "":
++		w.w.EditorReplace(rng, w.ime.preedit)
++		comp := key.Range{Start: rng.Start, End: rng.Start + utf8.RuneCountInString(w.ime.preedit)}
++		w.w.SetComposingRegion(comp)
++		w.w.SetEditorSelection(key.Range{Start: comp.End, End: comp.End})
++	default:
++		// The preedit was withdrawn without a commit.
++		if state.compose.Start >= 0 {
++			w.w.EditorReplace(state.compose, "")
++			w.w.SetComposingRegion(key.Range{Start: -1, End: -1})
++		}
++	}
++	w.ime.preedit, w.ime.commit = "", ""
++}
++
++// imeCancel drops the text the input method composed so far.
++func (w *window) imeCancel() {
++	state := w.w.EditorState()
++	if state.compose.Start >= 0 {
++		w.w.EditorReplace(state.compose, "")
++	}
++	w.w.SetComposingRegion(key.Range{Start: -1, End: -1})
++}
++
++// imePush sends the editor state and commits it, which makes the compositor
++// forward it to the input method.
++func (w *window) imePush() {
++	im := w.textInput()
++	if im == nil || !w.ime.shown {
++		return
++	}
++	hint, purpose := imeContentType(w.ime.hint)
++	C.zwp_text_input_v3_set_content_type(im, hint, purpose)
++	state := w.w.EditorState()
++	// text-input-v3 counts bytes; the editor tracks runes.
++	sn := state.Snippet
++	off := func(rune int) int { return byteIndex(sn.Text, rune-sn.Start) }
++	text := C.CString(sn.Text)
++	defer C.free(unsafe.Pointer(text))
++	C.zwp_text_input_v3_set_surrounding_text(im, text,
++		C.int32_t(off(state.Selection.Range.Start)), C.int32_t(off(state.Selection.Range.End)))
++	if r, ok := w.imeCaretRect(state); ok {
++		C.zwp_text_input_v3_set_cursor_rectangle(im,
++			C.int32_t(r.Min.X), C.int32_t(r.Min.Y), C.int32_t(r.Dx()), C.int32_t(r.Dy()))
++	}
++	C.zwp_text_input_v3_commit(im)
++}
++
++// imeCaretRect returns the caret in surface-local coordinates, which the
++// input method uses to place its popup.
++func (w *window) imeCaretRect(state editorState) (image.Rectangle, bool) {
++	sel := state.Selection
++	scale := max(w.scale, 1)
++	if !sel.CompositionBounds.Empty() {
++		r := image.Rectangle{}
++		for i, p := range []f32.Point{
++			sel.Transform.Transform(f32.Pt(float32(sel.CompositionBounds.Min.X), float32(sel.CompositionBounds.Min.Y))),
++			sel.Transform.Transform(f32.Pt(float32(sel.CompositionBounds.Max.X), float32(sel.CompositionBounds.Min.Y))),
++			sel.Transform.Transform(f32.Pt(float32(sel.CompositionBounds.Max.X), float32(sel.CompositionBounds.Max.Y))),
++			sel.Transform.Transform(f32.Pt(float32(sel.CompositionBounds.Min.X), float32(sel.CompositionBounds.Max.Y))),
++		} {
++			pt := image.Pt(int(p.X), int(p.Y))
++			if i == 0 {
++				r = image.Rectangle{Min: pt, Max: pt}
++				continue
++			}
++			r = r.Union(image.Rectangle{Min: pt, Max: pt})
++		}
++		return image.Rect(r.Min.X/scale, r.Min.Y/scale, r.Max.X/scale, r.Max.Y/scale), true
++	}
++	base := sel.Transform.Transform(sel.Caret.Pos)
++	top := sel.Transform.Transform(sel.Caret.Pos.Add(f32.Pt(0, -sel.Caret.Ascent)))
++	bottom := sel.Transform.Transform(sel.Caret.Pos.Add(f32.Pt(0, sel.Caret.Descent)))
++	x := int(base.X) / scale
++	y0 := int(top.Y) / scale
++	y1 := max(int(bottom.Y)/scale, y0+1)
++	return image.Rect(x, y0, x+1, y1), true
++}
++
++// byteIndex returns the byte offset of the rune index r within s.
++func byteIndex(s string, r int) int {
++	if r <= 0 {
++		return 0
++	}
++	n := 0
++	for i := range s {
++		if n == r {
++			return i
++		}
++		n++
++	}
++	return len(s)
++}
++
++// imeContentType maps an input hint to text-input-v3 content types.
++func imeContentType(hint key.InputHint) (C.uint32_t, C.uint32_t) {
++	switch hint {
++	case key.HintText:
++		return C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_COMPLETION | C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_SPELLCHECK,
++			C.ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL
++	case key.HintNumeric:
++		return C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, C.ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NUMBER
++	case key.HintEmail:
++		return C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, C.ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_EMAIL
++	case key.HintURL:
++		return C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, C.ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_URL
++	case key.HintTelephone:
++		return C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, C.ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_PHONE
++	case key.HintPassword:
++		return C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_HIDDEN_TEXT | C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_SENSITIVE_DATA,
++			C.ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_PASSWORD
++	}
++	return C.ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE, C.ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL
+ }
+ 
+ //export gio_onDataSourceTarget
+@@ -1676,9 +2110,10 @@
+ 		Time:      time.Duration(t) * time.Millisecond,
+ 		Modifiers: w.disp.xkb.Modifiers(),
+ 	})
+-	c, _ := w.systemGesture()
++	c, edge := w.systemGesture()
+ 	if c != w.cursor.system {
+ 		w.cursor.system = c
++		w.cursor.edge = edge
+ 		w.updateCursor()
+ 	}
+ }
+@@ -1802,11 +2237,55 @@
+ 	return w.surf, sz.X, sz.Y
+ }
+ 
+-func (w *window) ShowTextInput(show bool) {}
++// ShowTextInput enables or disables the input method.
++func (w *window) ShowTextInput(show bool) {
++	if w.ime.shown == show {
++		return
++	}
++	w.ime.shown = show
++	im := w.textInput()
++	if im == nil {
++		return
++	}
++	if show {
++		C.zwp_text_input_v3_enable(im)
++		w.imePush()
++		return
++	}
++	// A disabled text input forgets its state, so drop a composition in
++	// progress as well.
++	w.imeCancel()
++	C.zwp_text_input_v3_disable(im)
++	C.zwp_text_input_v3_commit(im)
++}
+ 
+-func (w *window) SetInputHint(_ key.InputHint) {}
++// SetInputHint remembers the kind of text being edited.
++func (w *window) SetInputHint(hint key.InputHint) {
++	if w.ime.hint == hint {
++		return
++	}
++	w.ime.hint = hint
++	w.imePush()
++}
+ 
+-func (w *window) EditorStateChanged(old, new editorState) {}
++// EditorStateChanged reports editor changes to the input method.
++func (w *window) EditorStateChanged(old, new editorState) {
++	if !w.ime.shown {
++		return
++	}
++	im := w.textInput()
++	if im == nil {
++		return
++	}
++	if shouldCancelComposition(old, new) {
++		// The text changed under the input method; start over, since
++		// text-input-v3 has no reset request.
++		w.imeCancel()
++		C.zwp_text_input_v3_disable(im)
++		C.zwp_text_input_v3_enable(im)
++	}
++	w.imePush()
++}
+ 
+ func (w *window) NewContext() (context, error) {
+ 	var firstErr error
+@@ -1911,6 +2390,9 @@
+ 	if d.decor != nil {
+ 		C.zxdg_decoration_manager_v1_destroy(d.decor)
+ 	}
++	if d.cursorShape != nil {
++		C.gio_cursor_shape_manager_destroy(d.cursorShape)
++	}
+ 	if d.shm != nil {
+ 		C.wl_shm_destroy(d.shm)
+ 	}
+--- a/app/os_x11.go
++++ b/app/os_x11.go
+@@ -22,6 +22,158 @@
+ #include <X11/Xcursor/Xcursor.h>
+ #include <xkbcommon/xkbcommon-x11.h>
+ 
++// XIM input contexts let the desktop's input method compose text for this
++// window. The input method draws its own preedit and candidate windows
++// (XIMPreeditNothing/XIMStatusNothing), so the client only reports where the
++// text is being edited through XNSpotLocation.
++static int gio_xtext_is_wchar(XIMText *t) { return t->encoding_is_wchar != 0; }
++static char *gio_xtext_multibyte(XIMText *t) { return t->string.multi_byte; }
++
++extern void gio_xim_preedit_start(XIC ic, XPointer client, XPointer call);
++extern void gio_xim_preedit_done(XIC ic, XPointer client, XPointer call);
++extern void gio_xim_preedit_draw(XIC ic, XPointer client, XPointer call);
++extern void gio_xim_preedit_caret(XIC ic, XPointer client, XPointer call);
++
++// gio_create_ic_style creates an input context with the attributes a style
++// needs. The position style is what a terminal wants: the input method draws
++// its preedit window at the spot the client reports, so it follows the
++// cursor, and keys pressed while composing do not reach the client as text.
++static XIC gio_create_ic_style(Display *dpy, XIM im, Window win, XIMStyle style, uintptr_t client) {
++	if (style & XIMPreeditPosition) {
++		char **missing = NULL;
++		int nmissing = 0;
++		char *def = NULL;
++		XFontSet font = XCreateFontSet(dpy, "-*-*-*-*-*-*-*-*-*-*-*-*-*-*", &missing, &nmissing, &def);
++		if (missing != NULL) {
++			XFreeStringList(missing);
++		}
++		XPoint spot = {0, 0};
++		XVaNestedList preedit = XVaCreateNestedList(0, XNSpotLocation, &spot, XNFontSet, font, NULL);
++		XIC ic = XCreateIC(im, XNInputStyle, style, XNClientWindow, win, XNFocusWindow, win,
++			XNPreeditAttributes, preedit, NULL);
++		XFree(preedit);
++		return ic;
++	}
++	if (style & XIMPreeditCallbacks) {
++		XIMCallback start = {(XPointer)client, (XIMProc)gio_xim_preedit_start};
++		XIMCallback done = {(XPointer)client, (XIMProc)gio_xim_preedit_done};
++		XIMCallback draw = {(XPointer)client, (XIMProc)gio_xim_preedit_draw};
++		XIMCallback caret = {(XPointer)client, (XIMProc)gio_xim_preedit_caret};
++		XVaNestedList preedit = XVaCreateNestedList(0,
++			XNPreeditStartCallback, &start,
++			XNPreeditDoneCallback, &done,
++			XNPreeditDrawCallback, &draw,
++			XNPreeditCaretCallback, &caret,
++			NULL);
++		XIC ic = XCreateIC(im, XNInputStyle, style, XNClientWindow, win, XNFocusWindow, win,
++			XNPreeditAttributes, preedit, NULL);
++		XFree(preedit);
++		return ic;
++	}
++	return XCreateIC(im, XNInputStyle, style, XNClientWindow, win, XNFocusWindow, win, NULL);
++}
++
++static XIC gio_create_ic(Display *dpy, XIM im, Window win, uintptr_t client) {
++	XIMStyles *styles = NULL;
++	if (XGetIMValues(im, XNQueryInputStyle, &styles, NULL) != NULL || styles == NULL) {
++		return NULL;
++	}
++	// A terminal wants the position style: the input method draws its
++	// preedit at the spot the client reports instead of forwarding the
++	// composition as text that would end up in the session. The callbacks
++	// style is the next best; the nothing style is the last resort, and
++	// with it the input method draws wherever it likes.
++	XIMStyle want[3];
++	size_t nwant = 0;
++	const XIMStyle pref[3] = {XIMPreeditPosition, XIMPreeditCallbacks, XIMPreeditNothing};
++	for (size_t k = 0; k < 3; k++) {
++		for (unsigned short i = 0; i < styles->count_styles; i++) {
++			XIMStyle st = styles->supported_styles[i];
++			if ((st & pref[k]) == pref[k] && (st & XIMStatusNothing) == XIMStatusNothing) {
++				want[nwant++] = st;
++				break;
++			}
++		}
++	}
++	XFree(styles);
++	if (nwant == 0) {
++		return NULL;
++	}
++	XIC ic = NULL;
++	for (size_t k = 0; k < nwant && ic == NULL; k++) {
++		ic = gio_create_ic_style(dpy, im, win, want[k], client);
++	}
++	if (ic == NULL) {
++		return NULL;
++	}
++	// Add the events the input method wants to see to the window mask.
++	unsigned long mask = 0;
++	if (XGetICValues(ic, XNFilterEvents, &mask, NULL) != NULL || mask == 0) {
++		return ic;
++	}
++	const unsigned long gio_mask = ExposureMask | FocusChangeMask |
++		KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask |
++		PointerMotionMask | StructureNotifyMask;
++	XSelectInput(dpy, win, mask | gio_mask);
++	return ic;
++}
++
++// gio_ic_lookup returns the text a key event produces, if any. The input
++// method composes that text before the event reaches the client.
++static int gio_ic_lookup(XIC ic, XKeyEvent *ev, char *buf, int len) {
++	if (ic == NULL || len <= 1) {
++		return 0;
++	}
++	KeySym ks;
++	Status status;
++	int n = Xutf8LookupString(ic, ev, buf, len - 1, &ks, &status);
++	// Only text that comes without a key symbol is a composition commit.
++	// A printable key reports XLookupBoth and must go through the key
++	// path, and control keys such as Return or Backspace must never be
++	// turned into the characters they happen to produce.
++	if (status != XLookupChars) {
++		return 0;
++	}
++	buf[n] = 0;
++	return n;
++}
++
++// gio_set_ic_spot moves the input method's spot to (x, y), in window
++// coordinates. XIM calls the spot root window coordinates, but fcitx5 adds
++// the client window position to it before placing its candidate window, so
++// root coordinates (what GTK-style clients report) land the candidate window
++// one window position away from the caret. Window coordinates place it at
++// the caret, which is what the terminal needs.
++static void gio_set_ic_spot(XIC ic, int x, int y) {
++	if (ic == NULL) {
++		return;
++	}
++	XPoint spot = {(short)x, (short)y};
++	XVaNestedList preedit = XVaCreateNestedList(0, XNSpotLocation, &spot, NULL);
++	XSetICValues(ic, XNPreeditAttributes, preedit, NULL);
++	XFree(preedit);
++}
++
++// gio_set_motif_hints asks the window manager to keep or drop the window
++// frame. _MOTIF_WM_HINTS is the only decoration control understood by the
++// common window managers.
++static void gio_set_motif_hints(Display *dpy, Window win, int decorated) {
++	struct {
++		unsigned long flags, functions, decorations, input_mode, status;
++	} hints;
++	hints.flags = (1L << 1); // MWM_HINTS_DECORATIONS
++	hints.functions = 0;
++	hints.decorations = decorated ? 1 : 0;
++	hints.input_mode = 0;
++	hints.status = 0;
++	Atom motif = XInternAtom(dpy, "_MOTIF_WM_HINTS", False);
++	XChangeProperty(dpy, win, motif, motif, 32, PropModeReplace, (unsigned char *)&hints, 5);
++}
++
+ */
+ import "C"
+ 
+@@ -30,10 +182,13 @@
+ 	"fmt"
+ 	"image"
+ 	"io"
++	"runtime/cgo"
+ 	"strconv"
+ 	"strings"
+ 	"sync"
+ 	"time"
++	"unicode/utf8"
+ 	"unsafe"
+ 
+ 	"gioui.org/f32"
+@@ -61,6 +216,13 @@
+ 	xkb          *xkb.Context
+ 	xkbEventBase C.int
+ 	xw           C.Window
++	// im and ic are the input method and its context, nil when the desktop
++	// has no XIM server. ximPreedit is the composition reported through the
++	// preedit callbacks.
++	im         C.XIM
++	ic         C.XIC
++	ximPreedit []rune
++	ximHandle  cgo.Handle
+ 
+ 	atoms struct {
+ 		// "UTF8_STRING".
+@@ -165,8 +327,6 @@
+ 	prev := w.config
+ 	cnf := w.config
+ 	cnf.apply(w.metric, options)
+-	// Decorations are never disabled.
+-	cnf.Decorated = true
+ 
+ 	switch cnf.Mode {
+ 	case Fullscreen:
+@@ -234,6 +394,7 @@
+ 	}
+ 	if cnf.Decorated != prev.Decorated {
+ 		w.config.Decorated = cnf.Decorated
++		w.setDecorations(cnf.Decorated)
+ 	}
+ 	w.ProcessEvent(ConfigEvent{Config: w.config})
+ }
+@@ -327,11 +488,102 @@
+ 	C.XDefineCursor(w.x, w.xw, c)
+ }
+ 
+-func (w *x11Window) ShowTextInput(show bool) {}
++// imeCommit inserts committed text, replacing the composition it was made
++// from, and leaves the caret after it.
++func (w *x11Window) imeCommit(text string) {
++	state := w.w.EditorState()
++	rng := imeRange(state)
++	w.ximPreedit = nil
++	w.w.EditorReplace(rng, text)
++	w.w.SetComposingRegion(key.Range{Start: -1, End: -1})
++	pos := min(rng.Start, rng.End) + utf8.RuneCountInString(text)
++	w.w.SetEditorSelection(key.Range{Start: pos, End: pos})
++}
++
++// ximWindow resolves the window a preedit callback belongs to.
++func ximWindow(client C.XPointer) *x11Window {
++	return cgo.Handle(uintptr(unsafe.Pointer(client))).Value().(*x11Window)
++}
++
++//export gio_xim_preedit_start
++func gio_xim_preedit_start(ic C.XIC, client C.XPointer, call C.XPointer) {
++	ximWindow(client).ximPreedit = nil
++}
++
++//export gio_xim_preedit_draw
++func gio_xim_preedit_draw(ic C.XIC, client C.XPointer, call C.XPointer) {
++	w := ximWindow(client)
++	cd := (*C.XIMPreeditDrawCallbackStruct)(unsafe.Pointer(call))
++	first, length := int(cd.chg_first), int(cd.chg_length)
++	if first > len(w.ximPreedit) {
++		first = len(w.ximPreedit)
++	}
++	end := min(first+length, len(w.ximPreedit))
++	var repl []rune
++	if cd.text != nil && C.gio_xtext_is_wchar(cd.text) == 0 {
++		repl = []rune(C.GoString(C.gio_xtext_multibyte(cd.text)))
++	}
++	next := make([]rune, 0, len(w.ximPreedit)-(end-first)+len(repl))
++	next = append(next, w.ximPreedit[:first]...)
++	next = append(next, repl...)
++	next = append(next, w.ximPreedit[end:]...)
++	w.ximPreedit = next
++	// The composition lives in the editor while the input method is
++	// composing; the terminal shows it inline and nothing is sent to the
++	// session until the commit arrives.
++	state := w.w.EditorState()
++	rng := imeRange(state)
++	w.w.EditorReplace(rng, string(next))
++	if len(next) == 0 {
++		w.w.SetComposingRegion(key.Range{Start: -1, End: -1})
++	} else {
++		w.w.SetComposingRegion(key.Range{Start: rng.Start, End: rng.Start + len(next)})
++	}
++}
++
++//export gio_xim_preedit_done
++func gio_xim_preedit_done(ic C.XIC, client C.XPointer, call C.XPointer) {
++	// The composition ended. The committed text arrives as a normal text
++	// lookup, which replaces the composition; an empty composition was
++	// already cleared by the draw callback.
++}
++
++//export gio_xim_preedit_caret
++func gio_xim_preedit_caret(ic C.XIC, client C.XPointer, call C.XPointer) {
++}
++
++// ShowTextInput focuses the input context, which starts input method
++// composition for this window.
++func (w *x11Window) ShowTextInput(show bool) {
++	if w.ic == nil {
++		return
++	}
++	if show {
++		C.XSetICFocus(w.ic)
++	} else {
++		C.XUnsetICFocus(w.ic)
++	}
++}
+ 
++// SetInputHint does nothing: XIM has no notion of input content types.
+ func (w *x11Window) SetInputHint(_ key.InputHint) {}
+ 
+-func (w *x11Window) EditorStateChanged(old, new editorState) {}
++// EditorStateChanged moves the input method's spot to the caret, so its
++// candidate window follows the text being edited.
++func (w *x11Window) EditorStateChanged(old, new editorState) {
++	if w.ic == nil {
++		return
++	}
++	sel := new.Selection
++	if !sel.CompositionBounds.Empty() {
++		p := sel.Transform.Transform(f32.Pt(float32(sel.CompositionBounds.Min.X), float32(sel.CompositionBounds.Max.Y)))
++		C.gio_set_ic_spot(w.ic, C.int(p.X), C.int(p.Y))
++		return
++	}
++	p := sel.Transform.Transform(sel.Caret.Pos.Add(f32.Pt(0, sel.Caret.Descent)))
++	C.gio_set_ic_spot(w.ic, C.int(p.X), C.int(p.Y))
++}
+ 
+ // close the window.
+ func (w *x11Window) close() {
+@@ -512,6 +764,18 @@
+ 		w.xkb.Destroy()
+ 		w.xkb = nil
+ 	}
++	if w.ic != nil {
++		C.XDestroyIC(w.ic)
++		w.ic = nil
++		if w.ximHandle != 0 {
++			w.ximHandle.Delete()
++			w.ximHandle = 0
++		}
++	}
++	if w.im != nil {
++		C.XCloseIM(w.im)
++		w.im = nil
++	}
+ 	C.XDestroyWindow(w.x, w.xw)
+ 	C.XCloseDisplay(w.x)
+ 	w.x = nil
+@@ -567,6 +831,15 @@
+ 				ks = key.Release
+ 			}
+ 			kevt := (*C.XKeyPressedEvent)(unsafe.Pointer(xev))
++			if ks == key.Press && w.ic != nil {
++				var buf [128]C.char
++				if n := C.gio_ic_lookup(w.ic, kevt, &buf[0], C.int(len(buf))); n > 0 {
++					// Text the input method committed, or a plain
++					// character, and therefore not a key event.
++					w.imeCommit(C.GoStringN(&buf[0], n))
++					break
++				}
++			}
+ 			for _, e := range h.w.xkb.DispatchKey(uint32(kevt.keycode), ks) {
+ 				if ee, ok := e.(key.EditEvent); ok {
+ 					// There's no support for IME yet.
+@@ -858,13 +1131,36 @@
+ 	// extensions
+ 	C.XSetWMProtocols(dpy, win, &w.atoms.evDelWindow, 1)
+ 
++	// Input method support. XIM requires the locale and its modifiers to be
++	// set before opening the input method.
++	locale := C.CString("")
++	defer C.free(unsafe.Pointer(locale))
++	if C.setlocale(C.LC_ALL, locale) != nil {
++		C.XSetLocaleModifiers(locale)
++		if im := C.XOpenIM(dpy, nil, nil, nil); im != nil {
++			w.im = im
++			w.ximHandle = cgo.NewHandle(w)
++			w.ic = C.gio_create_ic(dpy, im, win, C.uintptr_t(w.ximHandle))
++		}
++	}
++
+ 	// make the window visible on the screen
++	w.setDecorations(cnf.Decorated)
+ 	C.XMapWindow(dpy, win)
+ 	w.Configure(options)
+ 	w.ProcessEvent(X11ViewEvent{Display: unsafe.Pointer(dpy), Window: uintptr(win)})
+ 	return nil
+ }
+ 
++// setDecorations asks the window manager to add or drop the window frame.
++func (w *x11Window) setDecorations(decorated bool) {
++	d := C.int(0)
++	if decorated {
++		d = 1
++	}
++	C.gio_set_motif_hints(w.x, w.xw, d)
++}
++
+ // detectUIScale reports the system UI scale, or 1.0 if it fails.
+ func x11DetectUIScale(dpy *C.Display) float32 {
+ 	// default fixed DPI value used in most desktop UI toolkits
+--- a/app/os_windows.go
++++ b/app/os_windows.go
+@@ -46,6 +46,9 @@
+ 	// to the most recent WM_SETCURSOR.
+ 	cursorIn bool
+ 	cursor   syscall.Handle
++	// cursorName is the cursor requested through SetCursor, kept so it can
++	// be reloaded when the monitor DPI changes.
++	cursorName pointer.Cursor
+ 
+ 	animating bool
+ 
+@@ -269,7 +272,9 @@
+ 		// The message is processed.
+ 		return windows.TRUE
+ 	case windows.WM_DPICHANGED:
+-		// Let Windows know we're prepared for runtime DPI changes.
++		// Let Windows know we're prepared for runtime DPI changes, and
++		// load the cursor again for the new DPI.
++		w.SetCursor(w.cursorName)
+ 		return windows.TRUE
+ 	case windows.WM_ERASEBKGND:
+ 		// Avoid flickering between GPU content and background color.
+@@ -947,9 +952,13 @@
+ }
+ 
+ func (w *window) SetCursor(cursor pointer.Cursor) {
+-	c, err := loadCursor(cursor)
+-	if err != nil {
+-		c = resources.cursor
++	w.cursorName = cursor
++	c := cursorForDPI(windowsCursor[cursor], windows.GetWindowDPI(w.hwnd))
++	if c == 0 {
++		var err error
++		if c, err = loadCursor(cursor); err != nil {
++			c = resources.cursor
++		}
+ 	}
+ 	w.cursor = c
+ 	if w.cursorIn {
+@@ -957,6 +966,47 @@
+ 	}
+ }
+ 
++var (
++	cursorMu    sync.Mutex
++	cursorCache = map[[2]int]syscall.Handle{}
++)
++
++// cursorForDPI returns a system cursor sized for dpi. The shared cursors
++// LoadCursor returns are only sized for the system DPI, and Windows does not
++// resize them for per-monitor DPI aware processes, so the cursor is loaded
++// with the size GetSystemMetrics reports for the target DPI instead. The
++// handles are cached: the program owns them and keeps them until it exits.
++func cursorForDPI(id uint16, dpi int) syscall.Handle {
++	if id == 0 {
++		return 0
++	}
++	if dpi <= 0 {
++		dpi = 96
++	}
++	key := [2]int{int(id), dpi}
++	cursorMu.Lock()
++	h, ok := cursorCache[key]
++	cursorMu.Unlock()
++	if ok {
++		return h
++	}
++	// The system cursor metrics, missing from the windows package.
++	const (
++		smCXCursor = 13
++		smCYCursor = 14
++	)
++	cx := windows.GetSystemMetrics(smCXCursor) * dpi / 96
++	cy := windows.GetSystemMetrics(smCYCursor) * dpi / 96
++	h, err := windows.LoadImage(0, uint32(id), windows.IMAGE_CURSOR, cx, cy, windows.LR_DEFAULTCOLOR)
++	if err != nil {
++		return 0
++	}
++	cursorMu.Lock()
++	cursorCache[key] = h
++	cursorMu.Unlock()
++	return h
++}
++
+ // windowsCursor contains mapping from pointer.Cursor to an IDC.
+ var windowsCursor = [...]uint16{
+ 	pointer.CursorDefault:                  windows.IDC_ARROW,
