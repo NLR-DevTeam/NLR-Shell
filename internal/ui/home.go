@@ -391,6 +391,7 @@ func (h *homeView) searchBox(gtx layout.Context) layout.Dimensions {
 			}),
 		)
 	})
+	h.search.menuArea(gtx, th, r)
 	return layout.Dimensions{Size: r.Max}
 }
 

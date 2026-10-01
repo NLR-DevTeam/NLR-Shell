@@ -1,9 +1,13 @@
 package ui
 
 import (
+	"image"
 	"image/color"
 
+	"gioui.org/io/event"
+	"gioui.org/io/pointer"
 	"gioui.org/layout"
+	"gioui.org/op/clip"
 	"gioui.org/widget"
 
 	"nlrshell/internal/sshx"
@@ -13,7 +17,10 @@ import (
 // tabChrome holds the title-bar widgets every tab needs.
 type tabChrome struct {
 	tabClick, tabClose widget.Clickable
-	tabRC              rightClick
+	// tabPtr tags the pass-through pointer handler of the tab: a press
+	// activates (left), closes (middle) or opens the menu (right), and a
+	// left drag reorders.
+	tabPtr bool
 }
 
 func (c *tabChrome) chrome() *tabChrome { return c }
@@ -158,4 +165,58 @@ func (a *App) findFile(sess *sshx.Session, p string) fileTab {
 		}
 	}
 	return nil
+}
+
+// tabDrag follows a tab being pressed and possibly dragged.
+type tabDrag struct {
+	t      tab
+	startX int // pointer x at the press
+	grabX  int // pointer x minus the tab's left edge at the press
+	moved  bool
+}
+
+// tabPress reads the pointer events of a tab. It returns the buttons
+// pressed this frame and whether the left button was released.
+func tabPress(gtx layout.Context, c *tabChrome) (pressed pointer.Buttons, released bool) {
+	for {
+		e, ok := gtx.Event(pointer.Filter{Target: &c.tabPtr, Kinds: pointer.Press | pointer.Release | pointer.Cancel})
+		if !ok {
+			break
+		}
+		pe, ok := e.(pointer.Event)
+		if !ok {
+			continue
+		}
+		switch pe.Kind {
+		case pointer.Press:
+			pressed |= pe.Buttons
+		case pointer.Release, pointer.Cancel:
+			released = true
+		}
+	}
+	return pressed, released
+}
+
+// addTabPointer registers the tab's handler over r. It is pass-through so
+// the close button and hover tracking below it keep working.
+func addTabPointer(gtx layout.Context, c *tabChrome, r image.Rectangle) {
+	area := clip.Rect(r).Push(gtx.Ops)
+	pass := pointer.PassOp{}.Push(gtx.Ops)
+	event.Op(gtx.Ops, &c.tabPtr)
+	pass.Pop()
+	area.Pop()
+}
+
+// moveTab moves t to index to, keeping the active tab active.
+func (a *App) moveTab(t tab, to int) {
+	from := a.indexOf(t)
+	if from < 0 || to < 0 || to >= len(a.tabs) || from == to {
+		return
+	}
+	activeTab := a.currentTab()
+	a.tabs = append(a.tabs[:from], a.tabs[from+1:]...)
+	a.tabs = append(a.tabs[:to], append([]tab{t}, a.tabs[to:]...)...)
+	if activeTab != nil {
+		a.active = a.indexOf(activeTab)
+	}
 }

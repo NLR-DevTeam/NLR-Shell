@@ -63,7 +63,11 @@ func fileURIPath(s string) (string, bool) {
 	}
 	if runtime.GOOS == "windows" {
 		// file:///C:/dir parses into /C:/dir.
-		p = strings.TrimPrefix(p, "/")
+		p = filepath.FromSlash(strings.TrimPrefix(p, "/"))
+	}
+	// A URI without a drive on Windows does not name a local file.
+	if !filepath.IsAbs(p) {
+		return "", false
 	}
 	return p, true
 }

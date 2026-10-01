@@ -8,10 +8,10 @@ import (
 	"os"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	"gioui.org/f32"
 	"gioui.org/font"
 	"gioui.org/io/clipboard"
 	"gioui.org/io/event"
@@ -36,10 +36,22 @@ const (
 	colOwner
 )
 
+// fileDrag follows a press in the file list that may become a drag of the
+// selection onto a folder.
+type fileDrag struct {
+	pressed  bool
+	active   bool
+	start    f32.Point
+	pos      image.Point // pointer, in list coordinates
+	target   int         // row of the folder under the pointer, or -1
+	collapse int         // row to select alone if no drag happens, or -1
+}
+
 // filesView is the SFTP file manager panel.
 type filesView struct {
-	sv *sessionView
-	a  *App
+	drag fileDrag
+	sv   *sessionView
+	a    *App
 
 	path    string
 	entries []sshx.Entry
@@ -416,16 +428,7 @@ func (fv *filesView) rename(e sshx.Entry) {
 }
 
 func (fv *filesView) chmod(e sshx.Entry) {
-	sess, p := fv.sv.sess, fv.full(e.Name)
-	d := newInputDialog("权限", e.Name, fmt.Sprintf("%03o", e.Mode.Perm()), func(v string) {
-		n, err := strconv.ParseUint(strings.TrimSpace(v), 8, 32)
-		if err != nil || n > 0o7777 {
-			fv.a.Toast(toastError, "无效的权限值："+v)
-			return
-		}
-		fv.run("修改权限", func() error { return sess.Chmod(p, os.FileMode(n)) })
-	})
-	fv.a.Open(d)
+	fv.a.Open(newPermDialog(fv, e))
 }
 
 func (fv *filesView) remove(es []sshx.Entry) {
@@ -800,7 +803,7 @@ func (fv *filesView) Layout(gtx layout.Context) layout.Dimensions {
 func (fv *filesView) toolbar(gtx layout.Context) layout.Dimensions {
 	a := fv.a
 	th := a.th
-	h := gtx.Dp(38)
+	h := gtx.Dp(44)
 	connected := fv.sv.sess.State() == sshx.StateConnected
 	active := fv.sv.sess.Transfers.Active()
 	gtx.Constraints = layout.Exact(image.Pt(gtx.Constraints.Max.X, h))
@@ -809,7 +812,7 @@ func (fv *filesView) toolbar(gtx layout.Context) layout.Dimensions {
 			if !enabled {
 				gtx = gtx.Disabled()
 			}
-			return th.iconButton(gtx, clk, ic, 28, 17, th.Text2, on, title)
+			return th.iconButton(gtx, clk, ic, 30, 17, th.Text2, on, title)
 		})
 	}
 	gap := hspace(4)
@@ -822,6 +825,7 @@ func (fv *filesView) toolbar(gtx layout.Context) layout.Dimensions {
 			hspace(6),
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 				fv.pathField.Hint = "路径"
+				fv.pathField.Height = 30
 				return fv.pathField.box(gtx, th, func(gtx layout.Context) layout.Dimensions {
 					if !fv.loading {
 						return layout.Dimensions{}
@@ -835,7 +839,7 @@ func (fv *filesView) toolbar(gtx layout.Context) layout.Dimensions {
 			btn(&fv.mkdirBtn, icNewFolder, false, connected, "新建文件夹"), gap,
 			btn(&fv.uploadBtn, icUpload, false, connected, "上传"), gap,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				d := th.iconButton(gtx, &fv.tasksBtn, icTasks, 28, 17, th.Text2, fv.showTasks, "任务")
+				d := th.iconButton(gtx, &fv.tasksBtn, icTasks, 30, 17, th.Text2, fv.showTasks, "任务")
 				// A dot marks running tasks while the list is closed.
 				if active > 0 {
 					s := gtx.Dp(7)
@@ -872,11 +876,13 @@ func (fv *filesView) fileList(gtx layout.Context) layout.Dimensions {
 	cols := fv.columns(gtx, size.X)
 	rowH := gtx.Dp(fileRowH)
 	hdrH := gtx.Dp(26)
+	// The rows keep a small margin from the header and the bottom edge.
+	padV := gtx.Dp(4)
 
 	// Pointer handling for the rows area.
 	listH := size.Y - hdrH
 	for {
-		e, ok := gtx.Event(pointer.Filter{Target: &fv.listTag, Kinds: pointer.Press | pointer.Move | pointer.Leave})
+		e, ok := gtx.Event(pointer.Filter{Target: &fv.listTag, Kinds: pointer.Press | pointer.Move | pointer.Leave | pointer.Drag | pointer.Release | pointer.Cancel})
 		if !ok {
 			break
 		}
@@ -884,8 +890,9 @@ func (fv *filesView) fileList(gtx layout.Context) layout.Dimensions {
 		if !ok {
 			continue
 		}
-		idx := fv.list.Position.First + (int(pe.Position.Y)+fv.list.Position.Offset)/rowH
-		if idx < 0 || idx >= len(fv.view) || pe.Position.Y < 0 {
+		y := int(pe.Position.Y) - padV
+		idx := fv.list.Position.First + (y+fv.list.Position.Offset)/rowH
+		if idx < 0 || idx >= len(fv.view) || y < 0 || y >= listH-2*padV {
 			idx = -1
 		}
 		switch pe.Kind {
@@ -893,6 +900,31 @@ func (fv *filesView) fileList(gtx layout.Context) layout.Dimensions {
 			fv.hover = -1
 		case pointer.Move:
 			fv.hover = idx
+		case pointer.Drag:
+			// A press on a selected row that travels far enough drags the
+			// selection; dropping it on a folder moves it there.
+			d := &fv.drag
+			if d.pressed && !d.active && abs(int(pe.Position.X-d.start.X))+abs(int(pe.Position.Y-d.start.Y)) > gtx.Dp(6) {
+				d.active = true
+			}
+			if d.active {
+				d.pos = image.Pt(int(pe.Position.X), int(pe.Position.Y))
+				d.target = -1
+				if en := fv.entry(idx); en != nil && en.IsDir && !fv.selected[en.Name] {
+					d.target = idx
+				}
+			}
+		case pointer.Release, pointer.Cancel:
+			d := fv.drag
+			fv.drag = fileDrag{}
+			switch {
+			case d.active && pe.Kind == pointer.Release && d.target >= 0:
+				fv.moveInto(fv.selection(), *fv.entry(d.target))
+			case !d.active && d.collapse >= 0 && pe.Kind == pointer.Release:
+				// A plain click on one row of a multiple selection selects
+				// just that row, once it is clear no drag is starting.
+				fv.selectOnly(d.collapse)
+			}
 		case pointer.Press:
 			gtx.Execute(key.FocusCmd{Tag: fv})
 			fv.focused = true
@@ -929,8 +961,17 @@ func (fv *filesView) fileList(gtx layout.Context) layout.Dimensions {
 				case double:
 					fv.lastHit = -1
 					fv.open(*en)
+				case fv.selected[en.Name]:
+					// Keep a multiple selection intact in case this press
+					// starts a drag; Release narrows it otherwise.
+					fv.cursor, fv.anchor = idx, idx
+					fv.drag = fileDrag{pressed: true, start: pe.Position, target: -1, collapse: -1}
+					if len(fv.selected) > 1 {
+						fv.drag.collapse = idx
+					}
 				default:
 					fv.selectOnly(idx)
+					fv.drag = fileDrag{pressed: true, start: pe.Position, target: -1, collapse: -1}
 				}
 			}
 		}
@@ -1001,11 +1042,18 @@ func (fv *filesView) fileList(gtx layout.Context) layout.Dimensions {
 	case len(fv.view) == 0 && !fv.loading:
 		fv.message(gtx, listH, icFolder, th.Text3, "空文件夹")
 	default:
+		lo := op.Offset(image.Pt(0, padV)).Push(gtx.Ops)
 		lg := gtx
-		lg.Constraints = layout.Exact(image.Pt(size.X, listH))
+		lg.Constraints = layout.Exact(image.Pt(size.X, listH-2*padV))
+		lc := clip.Rect{Max: lg.Constraints.Max}.Push(gtx.Ops)
 		th.list(lg, &fv.list, len(fv.view), func(gtx layout.Context, i int) layout.Dimensions {
 			return fv.row(gtx, i, cols, rowH)
 		})
+		lc.Pop()
+		lo.Pop()
+		dg := gtx
+		dg.Constraints = layout.Exact(image.Pt(size.X, listH))
+		fv.layoutDrag(dg, rowH, padV)
 	}
 	area.Pop()
 	body.Pop()
@@ -1023,6 +1071,18 @@ func (fv *filesView) message(gtx layout.Context, h int, ic *widget.Icon, c color
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return th.txt(gtx, msg, 12, th.Text3) }),
 		)
 	})
+}
+
+// rowBaseline returns the baseline, from the top of a row, that centers
+// 13sp UI text in the row.
+func (fv *filesView) rowBaseline(gtx layout.Context, rowH int) int {
+	th := fv.a.th
+	mg := gtx
+	mg.Constraints = layout.Constraints{Max: image.Pt(gtx.Dp(200), rowH)}
+	rec := op.Record(gtx.Ops)
+	d := th.txt(mg, "国A", 13, th.Text)
+	rec.Stop()
+	return (rowH-d.Size.Y)/2 + d.Size.Y - d.Baseline
 }
 
 func (fv *filesView) row(gtx layout.Context, i int, cols fileCols, rowH int) layout.Dimensions {
@@ -1043,23 +1103,26 @@ func (fv *filesView) row(gtx layout.Context, i int, cols fileCols, rowH int) lay
 	case fv.hover == i:
 		fillRR(gtx.Ops, r, gtx.Dp(5), th.Bg2)
 	}
+	// Every text cell sits on one baseline. Centering each label in its
+	// box would not do: the monospaced permission column has different
+	// font metrics and would ride higher than its neighbours.
+	baseY := fv.rowBaseline(gtx, rowH)
+	pad := gtx.Dp(12)
 	cell := func(x, cw int, right bool, wd layout.Widget) {
-		if cw <= 0 {
+		if cw <= 2*pad {
 			return
 		}
-		st := op.Offset(image.Pt(x, 0)).Push(gtx.Ops)
 		cg := gtx
-		cg.Constraints = layout.Exact(image.Pt(cw, rowH))
-		layout.Inset{Left: 12, Right: 12}.Layout(cg, func(gtx layout.Context) layout.Dimensions {
-			dir := layout.W
-			if right {
-				dir = layout.E
-			}
-			return dir.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				gtx.Constraints.Min = image.Point{}
-				return wd(gtx)
-			})
-		})
+		cg.Constraints = layout.Constraints{Max: image.Pt(cw-2*pad, rowH)}
+		rec := op.Record(gtx.Ops)
+		d := wd(cg)
+		call := rec.Stop()
+		dx := x + pad
+		if right {
+			dx = x + cw - pad - d.Size.X
+		}
+		st := op.Offset(image.Pt(dx, baseY-(d.Size.Y-d.Baseline))).Push(gtx.Ops)
+		call.Add(gtx.Ops)
 		st.Pop()
 	}
 	ic, icc, nc := icFile, th.Text3, th.Text
@@ -1067,7 +1130,7 @@ func (fv *filesView) row(gtx layout.Context, i int, cols fileCols, rowH int) lay
 	case e.IsDir:
 		ic, icc = icFolder, th.Blue
 	case e.Mode&0o111 != 0:
-		icc, nc = th.Accent, mix(th.Text, th.Accent, 0.35)
+		icc, nc = th.AccentText, mix(th.Text, th.AccentText, 0.35)
 	}
 	if e.IsLink {
 		ic, icc = icLink, th.Purple
@@ -1078,12 +1141,14 @@ func (fv *filesView) row(gtx layout.Context, i int, cols fileCols, rowH int) lay
 	if strings.HasPrefix(e.Name, ".") {
 		nc = mix(nc, th.Bg1, 0.35)
 	}
-	cell(0, cols.name, false, func(gtx layout.Context) layout.Dimensions {
-		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return drawIcon(gtx, ic, 16, icc) }),
-			hspace(10),
-			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return th.txt(gtx, e.Name, 13, nc) }),
-		)
+	// The icon is centered in the row; the name joins the shared baseline.
+	is := gtx.Dp(16)
+	ist := op.Offset(image.Pt(pad, (rowH-is)/2)).Push(gtx.Ops)
+	drawIcon(gtx, ic, 16, icc)
+	ist.Pop()
+	iconW := is + gtx.Dp(10)
+	cell(iconW, cols.name-iconW, false, func(gtx layout.Context) layout.Dimensions {
+		return th.txt(gtx, e.Name, 13, nc)
 	})
 	x := cols.name
 	cell(x, cols.size, true, func(gtx layout.Context) layout.Dimensions {
@@ -1109,4 +1174,59 @@ func (fv *filesView) row(gtx layout.Context, i int, cols fileCols, rowH int) lay
 		return th.txt(gtx, o, 12, th.Text3)
 	})
 	return layout.Dimensions{Size: size}
+}
+
+// moveInto moves entries of the current directory into the folder dir.
+func (fv *filesView) moveInto(es []sshx.Entry, dir sshx.Entry) {
+	if len(es) == 0 {
+		return
+	}
+	sess, base := fv.sv.sess, fv.path
+	target := path.Join(base, dir.Name)
+	fv.run("移动", func() error {
+		for _, e := range es {
+			if err := sess.Rename(path.Join(base, e.Name), path.Join(target, e.Name)); err != nil {
+				return fmt.Errorf("%s: %w", e.Name, err)
+			}
+		}
+		return nil
+	})
+}
+
+// layoutDrag draws the drop target and a label of what is being dragged.
+func (fv *filesView) layoutDrag(gtx layout.Context, rowH, padV int) {
+	d := fv.drag
+	if !d.active {
+		return
+	}
+	th := fv.a.th
+	w := gtx.Constraints.Max.X
+	if d.target >= 0 {
+		y := padV + (d.target-fv.list.Position.First)*rowH - fv.list.Position.Offset
+		r := image.Rect(gtx.Dp(4), y, w-gtx.Dp(4), y+rowH)
+		fillRR(gtx.Ops, r, gtx.Dp(5), alpha(th.Accent, 0x22))
+		strokeRR(gtx.Ops, r, gtx.Dp(5), float32(gtx.Dp(1)), th.Accent)
+	}
+	sel := fv.selection()
+	label := ""
+	if len(sel) == 1 {
+		label = sel[0].Name
+	} else {
+		label = fmt.Sprintf("%d 项", len(sel))
+	}
+	rec := op.Record(gtx.Ops)
+	lg := gtx
+	lg.Constraints = layout.Constraints{Max: image.Pt(gtx.Dp(260), gtx.Dp(40))}
+	ld := layout.Inset{Left: 10, Right: 10, Top: 5, Bottom: 5}.Layout(lg, func(gtx layout.Context) layout.Dimensions {
+		return th.txt(gtx, label, 12, th.Text)
+	})
+	call := rec.Stop()
+	st := op.Offset(d.pos.Add(image.Pt(gtx.Dp(14), gtx.Dp(10)))).Push(gtx.Ops)
+	r := image.Rectangle{Max: ld.Size}
+	shadow(gtx.Ops, r, gtx.Dp(6))
+	fillRR(gtx.Ops, r, gtx.Dp(6), th.Bg2)
+	strokeRR(gtx.Ops, r, gtx.Dp(6), float32(gtx.Dp(1)), th.BorderHi)
+	call.Add(gtx.Ops)
+	st.Pop()
+	gtx.Execute(op.InvalidateCmd{})
 }

@@ -5,6 +5,11 @@
 go.mod text eol=lf
 go.sum text eol=lf
 
+# Applied to Gio's LF sources, and used on Linux: never convert.
+*.patch   text eol=lf
+*.sh      text eol=lf
+*.desktop text eol=lf
+
 *.ps1  text eol=crlf
 
 *.syso binary

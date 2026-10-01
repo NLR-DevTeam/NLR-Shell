@@ -49,11 +49,15 @@ type App struct {
 	tabs   []tab
 	active int // index into tabs, or -1 for the home page
 	ext    external
+	bg     background
 	// activeID mirrors the active session id for use from other goroutines.
 	activeID atomic.Value
 
 	postMu sync.Mutex
 	posted []func()
+	// withGtx holds UI-goroutine actions that need a layout context, such as
+	// clipboard commands chosen from a menu.
+	withGtx []func(gtx layout.Context)
 
 	mouse     image.Point
 	size      image.Point
@@ -61,7 +65,8 @@ type App struct {
 	maximized bool
 	decorated bool
 	// unattended is set for -connect: the connection must not open dialogs,
-	// so host keys are trusted and missing credentials fail the connection.
+	// so new host keys are trusted, changed ones refused, and missing
+	// credentials fail the connection.
 	unattended bool
 	refocus    bool
 	setDirty   time.Time
@@ -71,6 +76,8 @@ type App struct {
 	toasts  []toast
 
 	logoClk, homeClk, addClk          widget.Clickable
+	homeChrome                        tabChrome
+	drag                              tabDrag
 	winBtns                           [3]widget.Clickable
 	sideBtn, filesBtn, tunBtn, setBtn widget.Clickable
 	homeRC                            rightClick
@@ -79,8 +86,12 @@ type App struct {
 // New creates the app.
 func New(host Host, st *store.Store) *App {
 	set := st.Settings()
-	a := &App{host: host, st: st, set: set, th: NewTheme(set.FontFamily), active: -1}
+	a := &App{host: host, st: st, set: set, th: NewTheme(set.FontFamily, set.CJKFont), active: -1}
 	a.activeID.Store("")
+	a.th.editMenu = a.editMenu
+	a.applyTheme()
+	a.loadBackground()
+	go a.watchSystemTheme()
 	a.home = newHomeView(a)
 	return a
 }
@@ -96,9 +107,10 @@ func (a *App) SetMaximized(m bool) { a.maximized = m }
 // always decorate, so the in-app window buttons are dropped there.
 func (a *App) SetDecorated(on bool) { a.decorated = on }
 
-// SetUnattended makes connection prompts go away: host keys are trusted
-// without asking and anything else that would need input fails instead of
-// opening a dialog. The -connect option sets it.
+// SetUnattended makes connection prompts go away: new host keys are trusted
+// without asking, changed ones are refused, and anything else that would
+// need input fails instead of opening a dialog. The -connect option sets
+// it.
 func (a *App) SetUnattended(on bool) { a.unattended = on }
 
 // RememberWindow records the window size (in dp) and state so the next
@@ -219,6 +231,10 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.size = gtx.Constraints.Max
 	a.pxPerDp = gtx.Metric.PxPerDp
 	a.runPosted()
+	for _, fn := range a.withGtx {
+		fn(gtx)
+	}
+	a.withGtx = nil
 	if !a.setDirty.IsZero() {
 		if gtx.Now.Sub(a.setDirty) > time.Second {
 			a.Flush()
@@ -261,6 +277,7 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 		}
 	}
 
+	a.layoutBackground(gtx)
 	a.layoutDialogs(gtx)
 	a.layoutMenu(gtx)
 	a.layoutToasts(gtx)
@@ -414,22 +431,35 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 	if a.setBtn.Clicked(gtx) {
 		a.Open(newSettingsDialog(a))
 	}
+	// Tabs switch on press rather than on release, and a left drag
+	// reorders them.
+	if b, _ := tabPress(gtx, &a.homeChrome); b.Contain(pointer.ButtonPrimary) {
+		a.activate(-1)
+	}
 	for _, t := range append([]tab(nil), a.tabs...) {
 		c := t.chrome()
 		if c.tabClose.Clicked(gtx) {
 			a.closeTab(a.indexOf(t))
 			continue
 		}
-		if c.tabClick.Clicked(gtx) {
+		pressed, released := tabPress(gtx, c)
+		switch {
+		case pressed.Contain(pointer.ButtonPrimary) && !c.tabClose.Hovered():
 			a.activate(a.indexOf(t))
-		}
-		// Middle click closes the tab, right click opens its menu.
-		switch b := c.tabRC.Buttons(gtx); {
-		case b.Contain(pointer.ButtonTertiary):
+			a.drag = tabDrag{t: t, startX: a.mouse.X}
+		case pressed.Contain(pointer.ButtonTertiary):
+			// Middle click closes the tab, right click opens its menu.
 			a.closeTab(a.indexOf(t))
-		case b.Contain(pointer.ButtonSecondary):
+			continue
+		case pressed.Contain(pointer.ButtonSecondary):
 			a.tabMenu(t)
 		}
+		if released && a.drag.t == t {
+			a.drag = tabDrag{}
+		}
+	}
+	if a.drag.t != nil && a.indexOf(a.drag.t) < 0 {
+		a.drag = tabDrag{}
 	}
 
 	at := func(x int, wd layout.Widget) int {
@@ -510,28 +540,52 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 
 	// Tabs.
 	x = at(x, func(gtx layout.Context) layout.Dimensions {
-		return a.layoutTab(gtx, &a.homeClk, nil, icHome, "主页", color.NRGBA{}, a.active == -1, gtx.Dp(84), h)
+		d := a.layoutTab(gtx, &a.homeClk, nil, icHome, "主页", color.NRGBA{}, a.active == -1, gtx.Dp(84), h)
+		addTabPointer(gtx, &a.homeChrome, image.Rectangle{Max: d.Size})
+		return d
 	})
 	addW := gtx.Dp(34)
 	room := right - x - addW - gtx.Dp(70)
 	tabW := gtx.Dp(190)
-	if n := len(a.tabs); n > 0 {
+	n := len(a.tabs)
+	if n > 0 {
 		tabW = min(tabW, max(room/n, gtx.Dp(64)))
 	}
-	for i, t := range a.tabs {
-		i, t := i, t
-		x = at(x, func(gtx layout.Context) layout.Dimensions {
-			c := t.chrome()
-			if c.tabClick.Hovered() && !c.tabClose.Hovered() {
-				th.tip.hoverCard(gtx, c, t.tipCard())
-			}
-			d := a.layoutTab(gtx, &c.tabClick, &c.tabClose, t.icon(), t.title(), t.dot(a.active == i), a.active == i, tabW, h)
-			ar := clip.Rect{Max: d.Size}.Push(gtx.Ops)
-			c.tabRC.Add(gtx.Ops)
-			ar.Pop()
-			return d
-		})
+	tabsX := x
+	// A pressed tab starts moving once the pointer has travelled a little;
+	// it then follows the pointer and the others make room for it.
+	dragX := -1
+	if d := &a.drag; d.t != nil && n > 1 {
+		if !d.moved && abs(a.mouse.X-d.startX) > gtx.Dp(6) {
+			d.moved = true
+			d.grabX = d.startX - (tabsX + a.indexOf(d.t)*tabW)
+		}
+		if d.moved {
+			dragX = min(max(a.mouse.X-d.grabX, tabsX), tabsX+(n-1)*tabW)
+			a.moveTab(d.t, min(max((dragX-tabsX+tabW/2)/tabW, 0), n-1))
+		}
 	}
+	drawTab := func(i int, t tab, at int) {
+		st := op.Offset(image.Pt(at, 0)).Push(gtx.Ops)
+		c := t.chrome()
+		if c.tabClick.Hovered() && !c.tabClose.Hovered() && dragX < 0 {
+			th.tip.hoverCard(gtx, c, t.tipCard())
+		}
+		d := a.layoutTab(gtx, &c.tabClick, &c.tabClose, t.icon(), t.title(), t.dot(a.active == i), a.active == i, tabW, h)
+		addTabPointer(gtx, c, image.Rectangle{Max: d.Size})
+		st.Pop()
+	}
+	for i, t := range a.tabs {
+		if dragX >= 0 && t == a.drag.t {
+			continue
+		}
+		drawTab(i, t, tabsX+i*tabW)
+	}
+	if dragX >= 0 {
+		drawTab(a.indexOf(a.drag.t), a.drag.t, dragX)
+		gtx.Execute(op.InvalidateCmd{})
+	}
+	x = tabsX + n*tabW
 	at(x+gtx.Dp(4), func(gtx layout.Context) layout.Dimensions {
 		st := op.Offset(image.Pt(0, (h-gtx.Dp(28))/2)).Push(gtx.Ops)
 		tip := "新建连接"
@@ -549,23 +603,31 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 func (a *App) layoutTab(gtx layout.Context, clk, closeClk *widget.Clickable, ic *widget.Icon, title string, dot color.NRGBA, active bool, w, h int) layout.Dimensions {
 	th := a.th
 	size := image.Pt(w, h)
-	top := gtx.Dp(6)
-	r := image.Rect(gtx.Dp(2), top, w-gtx.Dp(2), h)
+	// Tabs are pills that stop short of the bar's bottom edge: a tab that
+	// runs into the content below would have to match the color of
+	// whatever is there (sidebar, terminal, editor), which never fits all.
+	margin := gtx.Dp(6)
+	r := image.Rect(gtx.Dp(2), margin, w-gtx.Dp(2), h-margin)
+	activeBg, hoverBg := th.Bg3, mix(th.Bg1, th.Bg3, 0.55)
+	if th.Light {
+		activeBg, hoverBg = th.Bg0, mix(th.Bg1, th.Bg3, 0.6)
+	}
 	// The close button is laid out after the tab so that it wins the click.
 	d := clk.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		fg := th.Text2
 		switch {
 		case active:
 			fg = th.Text
-			rr := clip.RRect{Rect: r, NW: gtx.Dp(8), NE: gtx.Dp(8)}
-			paint.FillShape(gtx.Ops, th.Bg0, rr.Op(gtx.Ops))
-			fill(gtx.Ops, image.Rect(r.Min.X+gtx.Dp(10), r.Min.Y, r.Max.X-gtx.Dp(10), r.Min.Y+gtx.Dp(2)), th.Accent)
+			fillRR(gtx.Ops, r, gtx.Dp(7), activeBg)
+			if th.Light {
+				strokeRR(gtx.Ops, r, gtx.Dp(7), float32(gtx.Dp(1)), th.Border)
+			}
 		case clk.Hovered():
-			rr := clip.RRect{Rect: image.Rect(r.Min.X, r.Min.Y, r.Max.X, r.Max.Y-gtx.Dp(5)), NW: gtx.Dp(7), NE: gtx.Dp(7), SW: gtx.Dp(7), SE: gtx.Dp(7)}
-			paint.FillShape(gtx.Ops, th.Bg2, rr.Op(gtx.Ops))
+			fillRR(gtx.Ops, r, gtx.Dp(7), hoverBg)
 		}
+		top := 0
 		inner := gtx
-		inner.Constraints = layout.Exact(image.Pt(w, h-top))
+		inner.Constraints = layout.Exact(image.Pt(w, h))
 		st := op.Offset(image.Pt(0, top)).Push(gtx.Ops)
 		closeRoom := unit.Dp(10)
 		if closeClk != nil {
@@ -598,7 +660,7 @@ func (a *App) layoutTab(gtx layout.Context, clk, closeClk *widget.Clickable, ic 
 	})
 	if closeClk != nil {
 		cs := gtx.Dp(22)
-		st := op.Offset(image.Pt(w-cs-gtx.Dp(8), top+(h-top-cs)/2)).Push(gtx.Ops)
+		st := op.Offset(image.Pt(w-cs-gtx.Dp(8), (h-cs)/2)).Push(gtx.Ops)
 		if active || clk.Hovered() || closeClk.Hovered() {
 			th.iconButton(gtx, closeClk, icClose, 22, 13, th.Text2, false, "关闭")
 		}
@@ -629,7 +691,7 @@ func (a *App) tabMenu(t tab) {
 // layoutTooltip draws the title of the control the pointer rests on.
 func (a *App) layoutTooltip(gtx layout.Context) {
 	th := a.th
-	t := &th.tip
+	t := th.tip
 	if !t.seen || a.menu != nil {
 		t.key, t.seen = nil, false
 		return
@@ -696,16 +758,14 @@ func (a *App) appMenu() {
 		MenuItem{Label: "主页", Icon: icHome, Hint: "Ctrl+Shift+T", Do: func() { a.activate(-1) }},
 		MenuItem{Sep: true},
 		MenuItem{Label: "设置", Icon: icSettings, Do: func() { a.Open(newSettingsDialog(a)) }},
-		MenuItem{Label: "关于", Icon: icInfo, Do: func() {
-			a.Open(&confirmDialog{title: "NLR Shell", message: "版本 " + Version})
-		}},
+		MenuItem{Label: "关于", Icon: icInfo, Do: func() { a.Open(&aboutDialog{}) }},
 		MenuItem{Sep: true},
 		MenuItem{Label: "退出", Icon: icPower, Do: func() { a.host.Perform(system.ActionClose) }},
 	)
 }
 
 // Version is the application version shown in the about box.
-var Version = "1.0.0"
+var Version = "1.1.0"
 
 // dp converts dp to pixels using the metric of the last frame.
 func (a *App) dp(v unit.Dp) int {

@@ -27,7 +27,7 @@ echo "tick $(getconf CLK_TCK 2>/dev/null || echo 100)"
 echo "page $(getconf PAGESIZE 2>/dev/null || echo 4096)"
 echo "user $(id -un 2>/dev/null)"
 echo "@@NLR ready"
-while read -r P; do
+while read -r ID P; do
 echo "@@NLR begin"
 echo "@stat"; grep '^cpu' /proc/stat 2>/dev/null
 echo "@mem"; grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached|SReclaimable|SwapTotal|SwapFree):' /proc/meminfo 2>/dev/null
@@ -36,6 +36,7 @@ echo "@uptime"; cat /proc/uptime 2>/dev/null
 echo "@net"; cat /proc/net/dev 2>/dev/null
 echo "@df"; df -kP 2>/dev/null
 echo "@proc"; cat /proc/[0-9]*/stat 2>/dev/null | awk '{s=$0;e=0;while((i=index(s,")"))>0){e+=i;s=substr(s,i+1)};o=index($0,"(");if(o==0||e==0)next;n=split(substr($0,e+2),a," ");print substr($0,1,o-2),a[2],a[5],a[6],a[12],a[13],a[22],substr($0,o+1,e-o-1)}' 2>/dev/null
+echo "@env"; [ "$ID" != - ] && grep -lzx "LC_NLRSHELL=$ID" /proc/[0-9]*/environ 2>/dev/null
 echo "@cwd"; for p in $P; do readlink "/proc/$p/cwd" 2>/dev/null && break; done
 echo "@@NLR end"
 done
@@ -139,6 +140,12 @@ type Parser struct {
 	prevTicks map[int]uint64
 	mem       map[string]uint64
 
+	// Marker, if set, is the value of LC_NLRSHELL in the interactive
+	// shell's environment; it finds the shell without guessing from the
+	// process tree.
+	Marker string
+	marked []int
+
 	// CwdPIDs are the PIDs to send with the next tick: the foreground
 	// process of the interactive shell followed by the shell itself.
 	CwdPIDs []int
@@ -219,6 +226,7 @@ func (p *Parser) begin() {
 	p.prevUp = p.uptime
 	p.prevWall, p.wall = p.wall, time.Now()
 	p.procs = p.procs[:0]
+	p.marked = p.marked[:0]
 	p.mem = map[string]uint64{}
 }
 
@@ -307,6 +315,11 @@ func (p *Parser) line(line string) {
 		}
 		pi.name = strings.Join(f[7:], " ")
 		p.procs = append(p.procs, pi)
+	case "env":
+		// Lines are /proc/PID/environ paths.
+		if pid, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(line, "/proc/"), "/environ")); err == nil {
+			p.marked = append(p.marked, pid)
+		}
 	case "cwd":
 		if p.cur.Cwd == "" && strings.HasPrefix(line, "/") {
 			p.cur.Cwd = line
@@ -417,9 +430,34 @@ func (p *Parser) finish() *Snapshot {
 	s.ProcCount = len(all)
 	s.Procs = topProcs(all, 40)
 
-	// Find the interactive shell: a process with a controlling terminal
-	// whose parent is one of our ancestors (the per-connection sshd).
+	// Find the interactive shell. The marker in its environment names it
+	// exactly: of the processes that carry it, the shell is the one whose
+	// parent does not (its children inherit the marker).
 	p.CwdPIDs = p.CwdPIDs[:0]
+	if len(p.marked) > 0 {
+		marked := map[int]bool{}
+		for _, pid := range p.marked {
+			marked[pid] = true
+		}
+		shell := 0
+		for _, pid := range p.marked {
+			if pi, ok := byPID[pid]; ok && !marked[pi.ppid] && (shell == 0 || pid < shell) {
+				shell = pid
+			}
+		}
+		if shell != 0 {
+			if fg := byPID[shell].tpgid; fg > 0 && fg != shell {
+				p.CwdPIDs = append(p.CwdPIDs, fg)
+			}
+			p.CwdPIDs = append(p.CwdPIDs, shell)
+			out := *s
+			return &out
+		}
+	}
+	// Without a marker (the server refused the variable, or grep cannot
+	// read NUL-separated input), guess: a process with a controlling
+	// terminal whose parent is one of our ancestors, the per-connection
+	// sshd.
 	chain := map[int]bool{p.selfPID: true}
 	anc := p.selfPID
 	for depth := 0; depth < 4 && p.selfPID != 0; depth++ {
@@ -483,12 +521,30 @@ func sub(a, b uint64) uint64 {
 // TickLine returns the stdin line that requests the next snapshot.
 func (p *Parser) TickLine() string {
 	var sb strings.Builder
-	for i, pid := range p.CwdPIDs {
-		if i > 0 {
-			sb.WriteByte(' ')
-		}
+	// The marker goes first; "-" stands for none.
+	if safeMarker(p.Marker) {
+		sb.WriteString(p.Marker)
+	} else {
+		sb.WriteByte('-')
+	}
+	for _, pid := range p.CwdPIDs {
+		sb.WriteByte(' ')
 		sb.WriteString(strconv.Itoa(pid))
 	}
 	sb.WriteByte('\n')
 	return sb.String()
+}
+
+// safeMarker reports whether m can be passed to the shell script as a
+// plain word: only letters and digits are allowed.
+func safeMarker(m string) bool {
+	if m == "" {
+		return false
+	}
+	for _, r := range m {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }

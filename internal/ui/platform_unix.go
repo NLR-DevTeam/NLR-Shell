@@ -4,8 +4,10 @@ package ui
 
 import (
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Fonts: families are tried in order, so CJK text falls back to a font
@@ -13,9 +15,14 @@ import (
 // through fontconfig, so they are matched against whatever the desktop has
 // installed.
 const (
-	uiFont        = "Noto Sans CJK SC, Noto Sans, Source Han Sans SC, WenQuanYi Micro Hei, DejaVu Sans, sans-serif"
-	defaultMono   = "Noto Sans Mono"
-	monoFallbacks = "Noto Sans Mono, DejaVu Sans Mono, Noto Sans CJK SC, Go Mono, monospace"
+	uiFont      = "Noto Sans CJK SC, Noto Sans, Source Han Sans SC, WenQuanYi Micro Hei, DejaVu Sans, sans-serif"
+	defaultMono = "Noto Sans Mono"
+	// monoFallbacks are monospace Latin fonts tried after the chosen Western
+	// font; cjkFallbacks follow the chosen Chinese font. Go Mono ships with
+	// the program, so Latin text always has a monospace font before any CJK
+	// (proportional) font is reached.
+	monoFallbacks = "Noto Sans Mono, DejaVu Sans Mono, Go Mono"
+	cjkFallbacks  = "Noto Sans CJK SC, Source Han Sans SC, WenQuanYi Micro Hei, monospace"
 )
 
 // shellOpen opens a file with its default application.
@@ -40,4 +47,40 @@ func revealInExplorer(path string) {
 		return
 	}
 	exec.Command("xdg-open", filepath.Dir(path)).Start()
+}
+
+// systemDark reports whether the desktop prefers a dark appearance, using
+// the freedesktop color-scheme setting where GNOME-compatible desktops
+// publish it, then GTK_THEME.
+func systemDark() (dark, ok bool) {
+	if out, err := exec.Command("gsettings", "get", "org.gnome.desktop.interface", "color-scheme").Output(); err == nil {
+		s := strings.TrimSpace(string(out))
+		switch {
+		case strings.Contains(s, "dark"):
+			return true, true
+		case strings.Contains(s, "light"), s == "'default'":
+			return false, true
+		}
+	}
+	if t := os.Getenv("GTK_THEME"); t != "" {
+		return strings.Contains(strings.ToLower(t), "dark"), true
+	}
+	return false, false
+}
+
+// systemFontFamilies lists the installed font families through fontconfig.
+func systemFontFamilies() []string {
+	out, err := exec.Command("fc-list", ":", "family").Output()
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, line := range strings.Split(string(out), "\n") {
+		// Localized names follow the primary one after commas.
+		if i := strings.IndexByte(line, ','); i >= 0 {
+			line = line[:i]
+		}
+		names = append(names, line)
+	}
+	return cleanFamilies(names)
 }

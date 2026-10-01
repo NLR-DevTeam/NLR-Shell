@@ -2,6 +2,8 @@
 *.exe
 *.exe~
 /NLRShell
+# Portable data directory next to a locally built NLRShell.exe
+/data/
 
 # Off-screen renderer output (cmd/shot)
 /shots/

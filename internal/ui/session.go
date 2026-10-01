@@ -39,6 +39,7 @@ type sessionView struct {
 	// pending holds terminal actions chosen from a menu; they run on the
 	// next frame because they need a layout context.
 	pending []string
+	cmd     *commandBar
 }
 
 func newSessionView(a *App, p store.Profile) *sessionView {
@@ -66,6 +67,8 @@ func newSessionView(a *App, p store.Profile) *sessionView {
 	sv.term.OnMenu = sv.termMenu
 	sv.mon = newMonitorView(sv)
 	sv.files = newFilesView(sv)
+	sv.cmd = newCommandBar(sv)
+	sv.term.OnConfirmPaste = sv.confirmPaste
 	sv.sess.Transfers.OnDone = func(ti sshx.TransferInfo) {
 		a.Post(func() {
 			// Downloads made for "open with local app" are not announced.
@@ -156,7 +159,7 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 
 	sv.term.FontSize = unit.Sp(set.FontSize)
 	sv.term.CopyOnSelect = set.CopyOnSelect
-	sv.term.RightPaste = set.RightClickPaste
+	sv.term.RightClick = set.RightClick
 
 	// Deferred terminal actions requested from menus need a frame context.
 	for _, act := range sv.pending {
@@ -185,7 +188,7 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 	}
 
 	// Keep keyboard focus on the terminal unless another input owns it.
-	if a.menu == nil && len(a.dialogs) == 0 && !sv.term.Focused() && !sv.files.wantsFocus(gtx) {
+	if a.menu == nil && len(a.dialogs) == 0 && !sv.term.Focused() && !sv.files.wantsFocus(gtx) && !gtx.Focused(&sv.cmd.field.Editor) {
 		sv.term.Focus(gtx)
 	}
 
@@ -215,7 +218,19 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 			total := gtx.Constraints.Max.Y
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return sv.layoutTerminal(gtx, state, status, err)
+					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+							d := sv.layoutTerminal(gtx, state, status, err)
+							sv.cmd.layoutQuick(gtx)
+							return d
+						}),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if !set.CommandBar {
+								return layout.Dimensions{}
+							}
+							return sv.cmd.Layout(gtx)
+						}),
+					)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					if !set.ShowFiles {

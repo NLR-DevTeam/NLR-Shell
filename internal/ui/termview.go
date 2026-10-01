@@ -23,6 +23,7 @@ import (
 	"gioui.org/unit"
 	"golang.org/x/image/math/fixed"
 
+	"nlrshell/internal/store"
 	"nlrshell/internal/term"
 )
 
@@ -75,7 +76,14 @@ type TermView struct {
 
 	FontSize     unit.Sp
 	CopyOnSelect bool
-	RightPaste   bool
+	// RightClick is one of the store.RightClick* modes.
+	RightClick string
+	// OnConfirmPaste, if set, is asked before multi-line text is pasted by
+	// a right click in the RightClickPasteConfirm mode; it calls send to go
+	// ahead.
+	OnConfirmPaste func(text string, send func())
+	// confirmPaste marks a clipboard read started by such a right click.
+	confirmPaste bool
 
 	// Font metrics in pixels for the current size.
 	px      int
@@ -481,9 +489,19 @@ func (v *TermView) update(gtx layout.Context, top int) {
 			if rc := e.Open(); rc != nil {
 				b, _ := io.ReadAll(io.LimitReader(rc, 8<<20))
 				rc.Close()
+				confirm := v.confirmPaste
+				v.confirmPaste = false
 				if len(b) > 0 {
-					v.sel = false
-					v.send(v.term.EncodePaste(string(b)))
+					text := string(b)
+					send := func() {
+						v.sel = false
+						v.send(v.term.EncodePaste(text))
+					}
+					if confirm && v.OnConfirmPaste != nil && strings.Contains(strings.TrimRight(text, "\r\n"), "\n") {
+						v.OnConfirmPaste(text, send)
+					} else {
+						send()
+					}
 				}
 			}
 		case pointer.Event:
@@ -525,15 +543,21 @@ func (v *TermView) pointer(gtx layout.Context, e pointer.Event, top int, mode te
 		case term.MouseMiddle:
 			v.Paste(gtx)
 		case term.MouseRight:
-			if v.RightPaste {
+			switch v.RightClick {
+			case store.RightClickPaste, store.RightClickPasteConfirm:
+				// With a selection, right click copies it, as in PuTTY.
 				if v.sel {
 					v.Copy(gtx)
 					v.sel = false
 				} else {
+					v.confirmPaste = v.RightClick == store.RightClickPasteConfirm
 					v.Paste(gtx)
 				}
-			} else if v.OnMenu != nil {
-				v.OnMenu()
+			case store.RightClickNone:
+			default:
+				if v.OnMenu != nil {
+					v.OnMenu()
+				}
 			}
 		case term.MouseLeft:
 			p := v.posAt(e.Position, top)
@@ -717,7 +741,7 @@ func (v *TermView) Layout(gtx layout.Context) layout.Dimensions {
 	v.update(gtx, top)
 
 	defer clip.Rect{Max: size}.Push(gtx.Ops).Pop()
-	bg, fg := v.th.Bg0, v.th.TermFg
+	bg, fg := v.th.TermBg, v.th.TermFg
 	if reverse {
 		bg, fg = fg, bg
 	}
@@ -782,22 +806,28 @@ func (v *TermView) Layout(gtx layout.Context) layout.Dimensions {
 				w *= 2
 			}
 		}
-		r := image.Rect(x, y, x+w, y+v.cellH)
+		// The cursor covers the em box around the baseline rather than the
+		// whole cell: fonts with tall line metrics (Noto Sans Mono, for one)
+		// leave a lot of space above the glyphs, and a full-cell block then
+		// looks much bigger than the characters.
+		top := y + max(v.ascent-v.px*4/5, 0)
+		bottom := min(top+v.px, y+v.cellH)
+		r := image.Rect(x, top, x+w, bottom)
 		c := v.th.TermCursor
 		switch {
 		case !v.focused:
 			strokeRR(gtx.Ops, r, 0, float32(gtx.Dp(1)), c)
 		case !on:
 		case curShape == term.CursorBar:
-			fill(gtx.Ops, image.Rect(x, y, x+max(gtx.Dp(2), 1), y+v.cellH), c)
+			fill(gtx.Ops, image.Rect(x, top, x+max(gtx.Dp(2), 1), bottom), c)
 		case curShape == term.CursorUnderline:
-			fill(gtx.Ops, image.Rect(x, y+v.cellH-max(gtx.Dp(2), 1), x+w, y+v.cellH), c)
+			fill(gtx.Ops, image.Rect(x, bottom-max(gtx.Dp(2), 1), x+w, bottom), c)
 		default:
 			fill(gtx.Ops, r, c)
 			if under.R != 0 && under.R != ' ' {
 				v.glyphBuf = v.glyphBuf[:0]
 				v.appendGlyph(under, curX)
-				v.flushGlyphs(gtx, y, v.th.Bg0)
+				v.flushGlyphs(gtx, y, v.th.TermBg)
 			}
 		}
 	}
@@ -811,7 +841,7 @@ func (v *TermView) Layout(gtx layout.Context) layout.Dimensions {
 		mgtx := gtx
 		mgtx.Constraints.Min = image.Point{}
 		m := op.Record(gtx.Ops)
-		d := Label{Text: string(v.ime), Size: v.FontSize, Color: v.th.Text, Mono: true}.Layout(mgtx, v.th)
+		d := Label{Text: string(v.ime), Size: v.FontSize, Color: v.th.TermFg, Mono: true}.Layout(mgtx, v.th)
 		call := m.Stop()
 		if x+d.Size.X > cols*v.cellW {
 			x = max(cols*v.cellW-d.Size.X, 0)

@@ -130,6 +130,7 @@ type editorTab struct {
 	dirty   bool
 	saving  bool
 	saveClk widget.Clickable
+	editRC  rightClick
 }
 
 func newEditorTab(a *App, sess *sshx.Session, p, text string) *editorTab {
@@ -233,8 +234,10 @@ func (t *editorTab) Layout(gtx layout.Context) layout.Dimensions {
 	layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			gtx.Constraints.Min = gtx.Constraints.Max
-			return layout.Inset{Left: 14, Right: 6, Top: 10, Bottom: 6}.Layout(gtx,
+			d := layout.Inset{Left: 14, Right: 6, Top: 10, Bottom: 6}.Layout(gtx,
 				editorStyle{th: th, e: &t.editor, size: 13, mono: true}.Layout)
+			editMenuArea(gtx, th, &t.editRC, &t.editor, image.Rectangle{Max: d.Size})
+			return d
 		}),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			line, col := t.editor.CaretPos()

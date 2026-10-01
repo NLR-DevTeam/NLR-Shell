@@ -196,9 +196,7 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			case store.AuthKey:
 				rows = append(rows,
 					row(12, fld(1, &d.keyPath), hspace(8), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						return layout.Inset{Bottom: 1}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-							return th.button(gtx, &d.browseClk, "浏览…", nil, btnDefault)
-						})
+						return th.button(gtx, &d.browseClk, "浏览…", nil, btnDefault)
 					})),
 					row(12, fld(1, &d.passphrase)),
 				)
@@ -283,7 +281,9 @@ type prompter struct {
 
 func (p *prompter) HostKey(host, keyType, fingerprint string, changed bool) bool {
 	if p.a.unattended {
-		return true
+		// A new host is trusted on first use, but a changed key may be a
+		// man-in-the-middle and must not be accepted without a person.
+		return !changed
 	}
 	ch := make(chan bool, 1)
 	p.a.Post(func() {
@@ -632,17 +632,66 @@ func (d *tunnelDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 type settingsDialog struct {
 	a *App
 
-	fontFamily, fontSize, scrollback, interval, downloadDir Field
-	copySel, rightPaste, follow, hidden                     widget.Bool
-	browseClk                                               widget.Clickable
-	closeClk, cancelClk, saveClk                            widget.Clickable
-	errMsg                                                  string
+	fontSize, scrollback, interval, downloadDir Field
+	fontFamily, cjkFont                         fontCombo
+	copySel, commandBar, follow, hidden         widget.Bool
+	browseClk                                   widget.Clickable
+	closeClk, cancelClk, saveClk                widget.Clickable
+	errMsg                                      string
+	list                                        widget.List
+
+	appearance, accent, rightClick string
+	background                     string
+	appearanceClk, accentClk       widget.Clickable
+	rightClickClk                  widget.Clickable
+	bgPickClk, bgClearClk          widget.Clickable
+}
+
+// Choices shown by the settings selects, in display order.
+var (
+	appearanceChoices = [][2]string{
+		{store.AppearanceSystem, "跟随系统"},
+		{store.AppearanceDark, "深色模式"},
+		{store.AppearanceLight, "浅色模式（除终端）"},
+		{store.AppearanceLightTerm, "浅色模式（含终端）"},
+	}
+	accentChoices = [][2]string{
+		{store.AccentGreen, "NLR 绿"},
+		{store.AccentBlue, "联创蓝"},
+		{store.AccentOrange, "氢软橙"},
+	}
+	rightClickChoices = [][2]string{
+		{store.RightClickPaste, "粘贴命令"},
+		{store.RightClickPasteConfirm, "粘贴命令，且在粘贴多行时提示"},
+		{store.RightClickMenu, "显示终端右键菜单"},
+		{store.RightClickNone, "不处理"},
+	}
+)
+
+func choiceLabel(choices [][2]string, v string) string {
+	for _, c := range choices {
+		if c[0] == v {
+			return c[1]
+		}
+	}
+	return choices[0][1]
+}
+
+// choiceMenu opens a menu of choices and stores the picked value in *v.
+func (a *App) choiceMenu(choices [][2]string, v *string) {
+	items := make([]MenuItem, len(choices))
+	for i, c := range choices {
+		c := c
+		items[i] = MenuItem{Label: c[1], Checked: *v == c[0], Do: func() { *v = c[0] }}
+	}
+	a.Menu(items...)
 }
 
 func newSettingsDialog(a *App) *settingsDialog {
 	s := a.set
 	d := &settingsDialog{a: a}
-	d.fontFamily.Label = "字体"
+	d.fontFamily.Label = "西文字体"
+	d.cjkFont.Label = "中文字体"
 	d.fontSize.Label = "字号"
 	d.scrollback.Label = "回滚行数"
 	d.interval.Label = "监控间隔（秒）"
@@ -651,11 +700,13 @@ func newSettingsDialog(a *App) *settingsDialog {
 		f.Editor.Filter = "0123456789"
 	}
 	d.fontFamily.SetText(s.FontFamily)
+	d.cjkFont.SetText(s.CJKFont)
 	d.fontSize.SetText(strconv.Itoa(int(s.FontSize)))
 	d.scrollback.SetText(strconv.Itoa(s.Scrollback))
 	d.interval.SetText(strconv.Itoa(s.MonitorInterval))
 	d.downloadDir.SetText(s.DownloadDir)
-	d.copySel.Value, d.rightPaste.Value, d.follow.Value, d.hidden.Value = s.CopyOnSelect, s.RightClickPaste, s.FollowCwd, s.ShowHidden
+	d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value = s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden
+	d.appearance, d.accent, d.rightClick, d.background = s.Appearance, s.Accent, s.RightClick, s.Background
 	return d
 }
 
@@ -677,17 +728,24 @@ func (d *settingsDialog) Submit(a *App) {
 		return
 	}
 	family := strings.TrimSpace(d.fontFamily.Text())
+	cjk := strings.TrimSpace(d.cjkFont.Text())
+	if cjk == "" {
+		cjk = store.DefaultSettings().CJKFont
+	}
 	if family == "" {
 		family = store.DefaultSettings().FontFamily
 	}
 	a.updateSettings(func(s *store.Settings) {
-		s.FontFamily, s.FontSize, s.Scrollback, s.MonitorInterval = family, float32(size), sb, iv
+		s.FontFamily, s.CJKFont, s.FontSize, s.Scrollback, s.MonitorInterval = family, cjk, float32(size), sb, iv
 		if dir := strings.TrimSpace(d.downloadDir.Text()); dir != "" {
 			s.DownloadDir = dir
 		}
-		s.CopyOnSelect, s.RightClickPaste, s.FollowCwd, s.ShowHidden = d.copySel.Value, d.rightPaste.Value, d.follow.Value, d.hidden.Value
+		s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden = d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value
+		s.Appearance, s.Accent, s.RightClick, s.Background = d.appearance, d.accent, d.rightClick, d.background
 	})
-	a.th.SetMono(family)
+	a.applyTheme()
+	a.loadBackground()
+	a.th.SetFonts(family, cjk)
 	for _, t := range a.sessionViews() {
 		t.sess.Term.SetScrollback(sb)
 		t.sess.SetMonitorInterval(time.Duration(iv) * time.Second)
@@ -699,7 +757,7 @@ func (d *settingsDialog) Submit(a *App) {
 
 func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	th := a.th
-	for _, f := range []*Field{&d.fontFamily, &d.fontSize, &d.scrollback, &d.interval, &d.downloadDir} {
+	for _, f := range []*Field{&d.fontSize, &d.scrollback, &d.interval, &d.downloadDir} {
 		if _, changed := f.Events(gtx); changed {
 			d.errMsg = ""
 		}
@@ -713,45 +771,82 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if d.browseClk.Clicked(gtx) {
 		pickFolder(a, "选择默认下载位置", func(dir string) { d.downloadDir.SetText(dir) })
 	}
+	if d.appearanceClk.Clicked(gtx) {
+		a.choiceMenu(appearanceChoices, &d.appearance)
+	}
+	if d.accentClk.Clicked(gtx) {
+		a.choiceMenu(accentChoices, &d.accent)
+	}
+	if d.rightClickClk.Clicked(gtx) {
+		a.choiceMenu(rightClickChoices, &d.rightClick)
+	}
+	if d.bgPickClk.Clicked(gtx) {
+		pickFiles(a, "选择背景图片", func(paths []string) {
+			if len(paths) > 0 {
+				d.background = paths[0]
+			}
+		})
+	}
+	if d.bgClearClk.Clicked(gtx) {
+		d.background = ""
+	}
 	fld := func(weight float32, f *Field) layout.FlexChild {
 		return layout.Flexed(weight, func(gtx layout.Context) layout.Dimensions { return f.Layout(gtx, th) })
 	}
-	chk := func(b *widget.Bool, label string) layout.FlexChild {
-		return layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+	combo := func(weight float32, c *fontCombo) layout.FlexChild {
+		return layout.Flexed(weight, func(gtx layout.Context) layout.Dimensions { return c.Layout(gtx, th) })
+	}
+	sel := func(weight float32, clk *widget.Clickable, label, value string) layout.FlexChild {
+		return layout.Flexed(weight, func(gtx layout.Context) layout.Dimensions { return selectBox(gtx, th, clk, label, value) })
+	}
+	row := func(children ...layout.FlexChild) layout.Widget {
+		return func(gtx layout.Context) layout.Dimensions {
+			return layout.Inset{Bottom: 12}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Alignment: layout.End}.Layout(gtx, children...)
+			})
+		}
+	}
+	chk := func(b *widget.Bool, label string) layout.Widget {
+		return func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: 9}.Layout(gtx, func(gtx layout.Context) layout.Dimensions { return th.checkbox(gtx, b, label) })
+		}
+	}
+	btn := func(clk *widget.Clickable, label string) layout.FlexChild {
+		return layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return th.button(gtx, clk, label, nil, btnDefault)
 		})
+	}
+	bgName := "无"
+	if d.background != "" {
+		bgName = baseName(d.background)
+	}
+	rows := []layout.Widget{
+		row(sel(1, &d.appearanceClk, "界面风格", choiceLabel(appearanceChoices, d.appearance)), hspace(10),
+			sel(1, &d.accentClk, "主题颜色", choiceLabel(accentChoices, d.accent))),
+		row(sel(1, &d.bgPickClk, "背景图片", bgName), hspace(8), btn(&d.bgClearClk, "清除")),
+		row(combo(2, &d.fontFamily), hspace(10), combo(2, &d.cjkFont), hspace(10), fld(1, &d.fontSize)),
+		row(fld(1, &d.scrollback), hspace(10), fld(1, &d.interval)),
+		row(sel(1, &d.rightClickClk, "终端右键", choiceLabel(rightClickChoices, d.rightClick))),
+		row(fld(1, &d.downloadDir), hspace(8), btn(&d.browseClk, "浏览…")),
+		vspaceW(4),
+		chk(&d.commandBar, "启用命令栏"),
+		chk(&d.copySel, "选中即复制"),
+		chk(&d.follow, "文件跟随终端目录"),
+		chk(&d.hidden, "显示隐藏文件"),
+		func(gtx layout.Context) layout.Dimensions {
+			if d.errMsg == "" {
+				return layout.Dimensions{}
+			}
+			return th.txt(gtx, d.errMsg, 12, th.Danger)
+		},
 	}
 	return a.dialogFrame(gtx, "设置", 520, &d.closeClk, d,
 		func(gtx layout.Context) layout.Dimensions {
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Alignment: layout.End}.Layout(gtx, fld(3, &d.fontFamily), hspace(10), fld(1, &d.fontSize))
-				}),
-				vspace(12),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Alignment: layout.End}.Layout(gtx, fld(1, &d.scrollback), hspace(10), fld(1, &d.interval))
-				}),
-				vspace(12),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Alignment: layout.End}.Layout(gtx, fld(1, &d.downloadDir), hspace(8),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return layout.Inset{Bottom: 1}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-								return th.button(gtx, &d.browseClk, "浏览…", nil, btnDefault)
-							})
-						}))
-				}),
-				vspace(16),
-				chk(&d.copySel, "选中即复制"),
-				chk(&d.rightPaste, "右键粘贴"),
-				chk(&d.follow, "文件跟随终端目录"),
-				chk(&d.hidden, "显示隐藏文件"),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					if d.errMsg == "" {
-						return layout.Dimensions{}
-					}
-					return th.txt(gtx, d.errMsg, 12, th.Danger)
-				}),
-			)
+			// Scrolls when the window is too short for all settings.
+			return th.list(gtx, &d.list, len(rows), func(gtx layout.Context, i int) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+				return rows[i](gtx)
+			})
 		},
 		func(gtx layout.Context) layout.Dimensions {
 			return buttonRow(gtx,

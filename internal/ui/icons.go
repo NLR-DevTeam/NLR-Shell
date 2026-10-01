@@ -75,6 +75,8 @@ var (
 	icJump      = mustIcon(icons.HardwareDeviceHub)
 	icSelectAll = mustIcon(icons.ContentSelectAll)
 	icClear     = mustIcon(icons.ContentClear)
+	icCut       = mustIcon(icons.ContentContentCut)
+	icBackspace = mustIcon(icons.ContentBackspace)
 	icImage     = mustIcon(icons.ImageImage)
 	icTasks     = mustIcon(icons.ActionAssignment)
 	icUser      = mustIcon(icons.SocialPerson)

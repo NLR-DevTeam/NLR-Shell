@@ -18,6 +18,10 @@ const appDir = "nlrshell"
 // when it is missing.
 const defaultFont = "Noto Sans Mono"
 
+// defaultCJKFont is the Chinese font: the UI font, and the terminal
+// fallback for characters the Western font lacks.
+const defaultCJKFont = "Noto Sans CJK SC"
+
 // defaultDownloadDir returns the directory downloads go to. It follows the
 // XDG_DOWNLOAD_DIR entry of user-dirs.dirs, which desktop environments
 // localize (for example to ~/下载), and falls back to ~/Downloads.
@@ -48,3 +52,6 @@ func defaultDownloadDir(home string) string {
 	}
 	return fallback
 }
+
+// dataDir is the per-user configuration directory.
+func dataDir() string { return userDir() }

@@ -347,3 +347,116 @@ func (n *nameCache) group(id uint32) string {
 	}
 	return strconv.FormatUint(uint64(id), 10)
 }
+
+// lookup finds the id of a user or group name; a number is taken as is.
+func lookup(m map[uint32]string, name string) (uint32, bool) {
+	if n, err := strconv.ParseUint(name, 10, 32); err == nil {
+		return uint32(n), true
+	}
+	for id, s := range m {
+		if s == name {
+			return id, true
+		}
+	}
+	return 0, false
+}
+
+// Owners returns the user names of the remote host, sorted, so a UI can
+// offer them as file owners.
+func (s *Session) Owners() ([]string, error) {
+	c, err := s.SFTP()
+	if err != nil {
+		return nil, err
+	}
+	s.sftpMu.Lock()
+	names := s.names
+	s.sftpMu.Unlock()
+	names.load(c)
+	out := make([]string, 0, len(names.users))
+	for _, n := range names.users {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// SetAttrs sets the permission bits of p and, when owner is not empty, its
+// owner. owner is "user" or "user:group", by name or number; a missing
+// group keeps the current one. mode holds the permission bits and, if
+// special is set, the setuid/setgid/sticky bits too; otherwise those bits
+// are kept as they are. With recursive set, everything under a directory
+// changes the same way; symbolic links are left alone.
+func (s *Session) SetAttrs(p string, mode os.FileMode, special bool, owner string, recursive bool) error {
+	c, err := s.SFTP()
+	if err != nil {
+		return err
+	}
+	s.sftpMu.Lock()
+	names := s.names
+	s.sftpMu.Unlock()
+	names.load(c)
+
+	var uid, gid uint32
+	setUID, setGID := false, false
+	if owner = strings.TrimSpace(owner); owner != "" {
+		user, group, hasGroup := strings.Cut(owner, ":")
+		if user != "" {
+			if uid, setUID = lookup(names.users, user); !setUID {
+				return fmt.Errorf("没有用户 %s", user)
+			}
+		}
+		if hasGroup && group != "" {
+			if gid, setGID = lookup(names.groups, group); !setGID {
+				return fmt.Errorf("没有用户组 %s", group)
+			}
+		}
+	}
+
+	const specialBits = os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+	apply := func(path string, fi os.FileInfo) error {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		m := mode & (os.ModePerm | specialBits)
+		if !special {
+			m = mode&os.ModePerm | fi.Mode()&specialBits
+		}
+		if err := c.Chmod(path, m); err != nil {
+			return fmt.Errorf("%s: %w", path, fsErr(err))
+		}
+		if setUID || setGID {
+			st, ok := fi.Sys().(*sftp.FileStat)
+			if !ok {
+				return fmt.Errorf("%s: 无法读取所有者", path)
+			}
+			u, g := st.UID, st.GID
+			if setUID {
+				u = uid
+			}
+			if setGID {
+				g = gid
+			}
+			if err := c.Chown(path, int(u), int(g)); err != nil {
+				return fmt.Errorf("%s: %w", path, fsErr(err))
+			}
+		}
+		return nil
+	}
+	fi, err := c.Lstat(p)
+	if err != nil {
+		return fsErr(err)
+	}
+	if !recursive || !fi.IsDir() {
+		return apply(p, fi)
+	}
+	w := c.Walk(p)
+	for w.Step() {
+		if err := w.Err(); err != nil {
+			return fsErr(err)
+		}
+		if err := apply(w.Path(), w.Stat()); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -16,6 +16,8 @@ import (
 	"gioui.org/op"
 	"gioui.org/op/clip"
 	"gioui.org/widget"
+
+	"nlrshell/internal/store"
 )
 
 // pickFiles lets the user choose one or more files. It returns at once; the
@@ -148,6 +150,10 @@ func (d *filePicker) Submit(a *App) {
 			paths = append(paths, filepath.Join(d.dir, e.name))
 		}
 	}
+	// Remember where the user was for the next time the picker opens.
+	if dir := d.dir; dir != "" && dir != a.set.PickerDir {
+		a.updateSettings(func(s *store.Settings) { s.PickerDir = dir })
+	}
 	a.Close(d)
 	if d.done != nil {
 		d.done(paths)
@@ -209,6 +215,17 @@ func (d *filePicker) load(dir string) {
 	})
 }
 
+// start is where the picker opens: the directory it was last used in, if
+// it still exists, otherwise the home directory.
+func (d *filePicker) start() string {
+	if p := d.a.set.PickerDir; p != "" {
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			return p
+		}
+	}
+	return d.home()
+}
+
 func (d *filePicker) home() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		return home
@@ -267,7 +284,7 @@ func (d *filePicker) events(gtx layout.Context) {
 	a := d.a
 	if !d.loaded {
 		d.loaded = true
-		d.load(d.home())
+		d.load(d.start())
 		// The list takes the keyboard first; clicking the path field moves
 		// the focus to its editor from there.
 		gtx.Execute(key.FocusCmd{Tag: d})

@@ -69,3 +69,55 @@ func (a *App) OpenRemote(p string, size int64) {
 
 // TabCount returns the number of open tabs.
 func (a *App) TabCount() int { return len(a.tabs) }
+
+// SetLook changes the appearance and accent settings and applies them.
+func (a *App) SetLook(appearance, accent string) {
+	a.set.Appearance, a.set.Accent = appearance, accent
+	a.applyTheme()
+}
+
+// OpenPermissions opens the permission dialog for a file of the active
+// tab's current directory.
+func (a *App) OpenPermissions(name string) {
+	if sv := a.current(); sv != nil {
+		for _, e := range sv.files.entries {
+			if e.Name == name {
+				sv.files.chmod(e)
+			}
+		}
+	}
+}
+
+// ShowQuickCommands opens or closes the quick command panel.
+func (a *App) ShowQuickCommands(on bool) {
+	if sv := a.current(); sv != nil {
+		sv.cmd.quickOpen = on
+	}
+}
+
+// SetBackground changes the background image setting and loads it.
+func (a *App) SetBackground(path string) {
+	a.set.Background = path
+	a.loadBackground()
+}
+
+// BackgroundLoaded reports whether a background image is showing.
+func (a *App) BackgroundLoaded() bool { return a.bg.size.X > 0 }
+
+// OpenFontList opens the Western font dropdown of an open settings dialog.
+func (a *App) OpenFontList() {
+	for _, d := range a.dialogs {
+		if s, ok := d.(*settingsDialog); ok {
+			s.fontFamily.open = true
+		}
+	}
+}
+
+// TabTitles returns the titles of the open tabs in order.
+func (a *App) TabTitles() []string {
+	out := make([]string, len(a.tabs))
+	for i, t := range a.tabs {
+		out[i] = t.title()
+	}
+	return out
+}

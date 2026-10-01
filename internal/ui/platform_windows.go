@@ -2,12 +2,14 @@ package ui
 
 import (
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 var (
@@ -25,9 +27,14 @@ var (
 // Fonts: families are tried in order, so CJK text falls back to a font
 // that has the glyphs when the preferred one does not.
 const (
-	uiFont        = "Microsoft YaHei UI, Segoe UI, PingFang SC, sans-serif"
-	defaultMono   = "Cascadia Mono"
-	monoFallbacks = "Cascadia Mono, Consolas, Microsoft YaHei UI, Go Mono, monospace"
+	uiFont      = "Microsoft YaHei UI, Segoe UI, PingFang SC, sans-serif"
+	defaultMono = "Cascadia Mono"
+	// monoFallbacks are monospace Latin fonts tried after the chosen Western
+	// font; cjkFallbacks follow the chosen Chinese font. Go Mono ships with
+	// the program, so Latin text always has a monospace font before any CJK
+	// (proportional) font is reached.
+	monoFallbacks = "Cascadia Mono, Consolas, Go Mono"
+	cjkFallbacks  = "Microsoft YaHei UI, SimSun, monospace"
 )
 
 // shellOpen opens a file with its default application, falling back to the
@@ -124,4 +131,43 @@ func InstallDropHandler(hwnd uintptr, fn func([]string)) {
 	old, _, _ := procSetWindowLongPtrW.Call(hwnd, gwlpWndProc, cb)
 	h.old.Store(old)
 	procDragAcceptFiles.Call(hwnd, 1)
+}
+
+// systemDark reports whether Windows is set to the dark app mode.
+func systemDark() (dark, ok bool) {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`, registry.QUERY_VALUE)
+	if err != nil {
+		return false, false
+	}
+	defer k.Close()
+	v, _, err := k.GetIntegerValue("AppsUseLightTheme")
+	if err != nil {
+		return false, false
+	}
+	return v == 0, true
+}
+
+// systemFontFamilies lists the installed font families, from the font
+// registrations of the machine and of the current user.
+func systemFontFamilies() []string {
+	var names []string
+	for _, root := range []registry.Key{registry.LOCAL_MACHINE, registry.CURRENT_USER} {
+		k, err := registry.OpenKey(root, `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts`, registry.QUERY_VALUE)
+		if err != nil {
+			continue
+		}
+		vs, _ := k.ReadValueNames(-1)
+		k.Close()
+		// Values look like "Microsoft YaHei & Microsoft YaHei UI (TrueType)"
+		// or "Arial Bold Italic (TrueType)".
+		for _, v := range vs {
+			if i := strings.LastIndex(v, " ("); i > 0 {
+				v = v[:i]
+			}
+			for _, n := range strings.Split(v, " & ") {
+				names = append(names, n)
+			}
+		}
+	}
+	return cleanFamilies(names)
 }

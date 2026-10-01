@@ -24,8 +24,8 @@ import (
 )
 
 // Command line options. -connect opens a session right away and never opens
-// a prompt: unknown and changed host keys are trusted, and credentials come
-// from -identity or -password.
+// a prompt: unknown host keys are trusted, changed ones refuse the
+// connection, and credentials come from -identity or -password.
 var (
 	connectFlag    = flag.String("connect", "", "connect to [user@]host[:port] on startup")
 	identityFlag   = flag.String("identity", "", "private key file for -connect")

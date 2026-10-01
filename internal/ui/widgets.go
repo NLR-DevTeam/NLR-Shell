@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gioui.org/font"
+	"gioui.org/gesture"
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
@@ -57,7 +58,7 @@ func (th *Theme) button(gtx layout.Context, clk *widget.Clickable, label string,
 			bg = th.Bg3
 		}
 	}
-	h := gtx.Dp(30)
+	h := gtx.Dp(32)
 	return clk.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		m := op.Record(gtx.Ops)
 		gtx.Constraints.Min = image.Pt(0, 0)
@@ -154,7 +155,7 @@ func (th *Theme) iconButton(gtx layout.Context, clk *widget.Clickable, ic *widge
 			fillRR(gtx.Ops, r, gtx.Dp(6), alpha(th.Accent, 0x14))
 		}
 		if active {
-			fg = th.Accent
+			fg = th.AccentText
 		}
 		ip := gtx.Dp(size)
 		st := op.Offset(image.Pt((px-ip)/2, (px-ip)/2)).Push(gtx.Ops)
@@ -170,7 +171,10 @@ type Field struct {
 	Label  string
 	Hint   string
 	Mono   bool
+	// Height of the input box; zero means the standard 32dp.
+	Height unit.Dp
 	init   bool
+	menu   rightClick
 }
 
 func (f *Field) setup() {
@@ -272,6 +276,9 @@ func fillEditor(gtx layout.Context, es editorStyle) layout.Dimensions {
 func (f *Field) box(gtx layout.Context, th *Theme, trailing layout.Widget) layout.Dimensions {
 	f.setup()
 	h := gtx.Dp(32)
+	if f.Height > 0 {
+		h = gtx.Dp(f.Height)
+	}
 	w := gtx.Constraints.Max.X
 	r := image.Rectangle{Max: image.Pt(w, h)}
 	rad := gtx.Dp(6)
@@ -282,8 +289,9 @@ func (f *Field) box(gtx layout.Context, th *Theme, trailing layout.Widget) layou
 	}
 	strokeRR(gtx.Ops, r, rad, float32(gtx.Dp(1)), border)
 	f.hitArea(gtx, r)
-	gtx.Constraints = layout.Exact(r.Max)
-	layout.Inset{Left: 10, Right: 6}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+	cg := gtx
+	cg.Constraints = layout.Exact(r.Max)
+	layout.Inset{Left: 10, Right: 6}.Layout(cg, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 				return fillEditor(gtx, editorStyle{th: th, e: &f.Editor, hint: f.Hint, size: 13, mono: f.Mono})
@@ -296,7 +304,26 @@ func (f *Field) box(gtx layout.Context, th *Theme, trailing layout.Widget) layou
 			}),
 		)
 	})
+	f.menuArea(gtx, th, r)
 	return layout.Dimensions{Size: r.Max}
+}
+
+// menuArea opens the cut/copy/paste menu when r is right-clicked. It must be
+// added after the editor: the area is pass-through, so the editor below it
+// still receives every event.
+func (f *Field) menuArea(gtx layout.Context, th *Theme, r image.Rectangle) {
+	editMenuArea(gtx, th, &f.menu, &f.Editor, r)
+}
+
+// editMenuArea is menuArea for any editor.
+func editMenuArea(gtx layout.Context, th *Theme, rc *rightClick, e *widget.Editor, r image.Rectangle) {
+	if rc.Clicked(gtx) && th.editMenu != nil {
+		gtx.Execute(key.FocusCmd{Tag: e})
+		th.editMenu(e)
+	}
+	a := clip.Rect(r).Push(gtx.Ops)
+	rc.Add(gtx.Ops)
+	a.Pop()
 }
 
 // editorStyle draws a widget.Editor with the theme's fonts and colors.
@@ -368,7 +395,7 @@ func (s *Segmented) Layout(gtx layout.Context, th *Theme, opts [][2]string) layo
 			s.Value = opts[i][0]
 		}
 	}
-	h := gtx.Dp(30)
+	h := gtx.Dp(32)
 	gtx.Constraints.Min = image.Point{}
 	m := op.Record(gtx.Ops)
 	children := make([]layout.FlexChild, len(opts))
@@ -423,6 +450,46 @@ func (th *Theme) list(gtx layout.Context, l *widget.List, n int, el layout.ListE
 	ls.Track.MinorPadding = 2
 	ls.Track.MajorPadding = 2
 	return ls.Layout(gtx, n, el)
+}
+
+// listFade tracks when an auto-hiding scrollbar should show.
+type listFade struct {
+	hover      gesture.Hover
+	first, off int
+	active     time.Time
+}
+
+// autoHideList is list with a scrollbar that only shows while the pointer
+// is over the list, while it scrolls, and for a moment after.
+func (th *Theme) autoHideList(gtx layout.Context, l *widget.List, st *listFade, n int, el layout.ListElement) layout.Dimensions {
+	const linger = 900 * time.Millisecond
+	hovered := st.hover.Update(gtx.Source)
+	if l.Position.First != st.first || l.Position.Offset != st.off {
+		st.first, st.off, st.active = l.Position.First, l.Position.Offset, gtx.Now
+	}
+	recent := gtx.Now.Sub(st.active) < linger
+	if recent && !hovered {
+		gtx.Execute(op.InvalidateCmd{At: st.active.Add(linger)})
+	}
+	l.Axis = layout.Vertical
+	ls := material.List(th.Mat, l)
+	ls.AnchorStrategy = material.Overlay
+	ls.Indicator.Color = alpha(th.Text3, 0x88)
+	ls.Indicator.HoverColor = alpha(th.Text2, 0xcc)
+	ls.Indicator.MinorWidth = 6
+	ls.Track.MinorPadding = 2
+	ls.Track.MajorPadding = 2
+	if !hovered && !recent && !l.Scrollbar.Dragging() {
+		ls.Indicator.Color, ls.Indicator.HoverColor = color.NRGBA{}, color.NRGBA{}
+	}
+	d := ls.Layout(gtx, n, el)
+	// Watch for the pointer without taking events from the list.
+	area := clip.Rect{Max: d.Size}.Push(gtx.Ops)
+	pass := pointer.PassOp{}.Push(gtx.Ops)
+	st.hover.Add(gtx.Ops)
+	pass.Pop()
+	area.Pop()
+	return d
 }
 
 // Splitter is a draggable divider that adjusts a size in dp.

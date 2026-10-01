@@ -1,6 +1,6 @@
-// Package store persists connection profiles and settings as JSON under the
-// user's config directory. Secrets are encrypted at rest: with Windows DPAPI
-// on Windows, and with a local key file on other systems (see secret_*.go).
+// Package store persists connection profiles and settings as JSON in the
+// data directory (see Dir). Secrets are encrypted at rest with a key file
+// kept in the same directory (see secret.go).
 package store
 
 import (
@@ -49,7 +49,7 @@ type Profile struct {
 	Port  int    `json:"port"`
 	User  string `json:"user"`
 	Auth  string `json:"auth"`
-	// Password and Passphrase are DPAPI-encrypted, base64 encoded.
+	// Password and Passphrase are encrypted with Encrypt, base64 encoded.
 	Password   string    `json:"password,omitempty"`
 	KeyPath    string    `json:"keyPath,omitempty"`
 	Passphrase string    `json:"passphrase,omitempty"`
@@ -101,28 +101,64 @@ type Snippet struct {
 
 // Settings are user preferences and remembered layout.
 type Settings struct {
-	FontFamily      string  `json:"fontFamily"`
-	FontSize        float32 `json:"fontSize"`
-	Scrollback      int     `json:"scrollback"`
-	SidebarWidth    int     `json:"sidebarWidth"`
-	FilesHeight     int     `json:"filesHeight"`
-	ShowSidebar     bool    `json:"showSidebar"`
-	ShowFiles       bool    `json:"showFiles"`
-	ShowHidden      bool    `json:"showHidden"`
-	FollowCwd       bool    `json:"followCwd"`
-	CopyOnSelect    bool    `json:"copyOnSelect"`
-	RightClickPaste bool    `json:"rightClickPaste"`
-	DownloadDir     string  `json:"downloadDir"`
-	MonitorInterval int     `json:"monitorInterval"`
-	WindowWidth     int     `json:"windowWidth"`
-	WindowHeight    int     `json:"windowHeight"`
-	Maximized       bool    `json:"maximized"`
+	// FontFamily is the Western (terminal) font; CJKFont is the Chinese
+	// font, used for the UI and as the terminal fallback.
+	FontFamily   string  `json:"fontFamily"`
+	CJKFont      string  `json:"cjkFont"`
+	FontSize     float32 `json:"fontSize"`
+	Scrollback   int     `json:"scrollback"`
+	SidebarWidth int     `json:"sidebarWidth"`
+	FilesHeight  int     `json:"filesHeight"`
+	ShowSidebar  bool    `json:"showSidebar"`
+	ShowFiles    bool    `json:"showFiles"`
+	ShowHidden   bool    `json:"showHidden"`
+	FollowCwd    bool    `json:"followCwd"`
+	CopyOnSelect bool    `json:"copyOnSelect"`
+	// RightClickPaste is the pre-1.1 form of RightClick, read for migration.
+	RightClickPaste bool   `json:"rightClickPaste,omitempty"`
+	RightClick      string `json:"rightClick"`
+	CommandBar      bool   `json:"commandBar"`
+	Appearance      string `json:"appearance"`
+	Accent          string `json:"accent"`
+	// PickerDir is the local directory the file picker was last used in.
+	PickerDir string `json:"pickerDir,omitempty"`
+	// Background is the path of an optional background image.
+	Background      string `json:"background,omitempty"`
+	DownloadDir     string `json:"downloadDir"`
+	MonitorInterval int    `json:"monitorInterval"`
+	WindowWidth     int    `json:"windowWidth"`
+	WindowHeight    int    `json:"windowHeight"`
+	Maximized       bool   `json:"maximized"`
 }
+
+// Right-click behavior in the terminal.
+const (
+	RightClickPaste        = "paste"        // paste the clipboard
+	RightClickPasteConfirm = "pasteConfirm" // paste, asking first for several lines
+	RightClickMenu         = "menu"         // show the terminal context menu
+	RightClickNone         = "none"         // do nothing
+)
+
+// Appearance modes.
+const (
+	AppearanceSystem    = "system"    // dark or light (terminal stays dark) following the OS
+	AppearanceDark      = "dark"      //
+	AppearanceLight     = "light"     // light UI, dark terminal
+	AppearanceLightTerm = "lightTerm" // light UI and light terminal
+)
+
+// Accent colors.
+const (
+	AccentGreen  = "green"
+	AccentBlue   = "blue"
+	AccentOrange = "orange"
+)
 
 // DefaultSettings returns the settings used on first run.
 func DefaultSettings() Settings {
 	return Settings{
 		FontFamily:      defaultFont,
+		CJKFont:         defaultCJKFont,
 		FontSize:        14,
 		Scrollback:      10000,
 		SidebarWidth:    264,
@@ -131,6 +167,10 @@ func DefaultSettings() Settings {
 		ShowFiles:       true,
 		FollowCwd:       true,
 		MonitorInterval: 2,
+		RightClick:      RightClickMenu,
+		CommandBar:      true,
+		Appearance:      AppearanceDark,
+		Accent:          AccentGreen,
 		WindowWidth:     1280,
 		WindowHeight:    800,
 	}
@@ -150,21 +190,33 @@ type Store struct {
 	data fileData
 }
 
-// Dir returns the application data directory, creating it if needed. It is
-// %APPDATA%\NLR Shell on Windows and $XDG_CONFIG_HOME/nlrshell on other
-// systems, unless the NLRSHELL_DATA environment variable points elsewhere
-// (useful for a portable install).
+// Dir returns the application data directory, creating it if needed. On
+// Windows it is "data" next to the executable, so the program and its
+// connections move together; on other systems it is
+// $XDG_CONFIG_HOME/nlrshell. The NLRSHELL_DATA environment variable
+// overrides both.
 func Dir() string {
 	dir := os.Getenv("NLRSHELL_DATA")
 	if dir == "" {
-		base, err := os.UserConfigDir()
-		if err != nil {
-			base = "."
-		}
-		dir = filepath.Join(base, appDir)
+		dataDirOnce.Do(func() { dataDirPath = dataDir() })
+		dir = dataDirPath
 	}
 	os.MkdirAll(dir, 0o700)
 	return dir
+}
+
+var (
+	dataDirOnce sync.Once
+	dataDirPath string
+)
+
+// userDir is the per-user configuration directory of the program.
+func userDir() string {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		base = "."
+	}
+	return filepath.Join(base, appDir)
 }
 
 // Open loads the store from dir (see Dir).
@@ -191,6 +243,9 @@ func Open(dir string) *Store {
 	if st.SidebarWidth < 120 {
 		st.SidebarWidth = def.SidebarWidth
 	}
+	if st.RightClickPaste {
+		st.RightClick, st.RightClickPaste = RightClickPaste, false
+	}
 	if st.FilesHeight < 80 {
 		st.FilesHeight = def.FilesHeight
 	}
@@ -199,7 +254,32 @@ func Open(dir string) *Store {
 			st.DownloadDir = defaultDownloadDir(home)
 		}
 	}
+	if s.migrateSecrets() {
+		s.saveLocked()
+	}
 	return s
+}
+
+// migrateSecrets re-encrypts secrets stored in an older format (DPAPI on
+// Windows) with the current key, so that the data directory can move to
+// another machine. It reports whether anything changed.
+func (s *Store) migrateSecrets() bool {
+	changed := false
+	convert := func(v *string) {
+		if *v == "" || Decrypt(*v) != "" {
+			return
+		}
+		if plain, ok := legacyDecrypt(*v); ok {
+			if enc := Encrypt(plain); enc != "" {
+				*v, changed = enc, true
+			}
+		}
+	}
+	for i := range s.data.Profiles {
+		convert(&s.data.Profiles[i].Password)
+		convert(&s.data.Profiles[i].Passphrase)
+	}
+	return changed
 }
 
 func (s *Store) path() string { return filepath.Join(s.dir, "config.json") }

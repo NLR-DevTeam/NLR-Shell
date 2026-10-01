@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -74,7 +75,8 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	b = append(bytes.TrimRight(b, "\n"), []byte("\n\nreplace gioui.org => "+filepath.ToSlash(cache)+"\n")...)
+	// Quoted, so that a path with spaces (common on Windows) stays one token.
+	b = append(bytes.TrimRight(b, "\n"), []byte("\n\nreplace gioui.org => "+strconv.Quote(filepath.ToSlash(cache))+"\n")...)
 	if err := os.WriteFile(modfile, b, 0o644); err != nil {
 		return err
 	}

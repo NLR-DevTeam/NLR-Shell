@@ -134,7 +134,7 @@ func TestParser(t *testing.T) {
 		t.Fatalf("cwd: %q", s.Cwd)
 	}
 	// The shell is 801 (sibling of our sh with a tty); its foreground job is 850.
-	if p.TickLine() != "850 801\n" {
+	if p.TickLine() != "- 850 801\n" {
 		t.Fatalf("tick: %q", p.TickLine())
 	}
 }
@@ -149,5 +149,33 @@ func TestUnsupported(t *testing.T) {
 	}
 	if last == nil || last.Supported {
 		t.Fatalf("got %+v", last)
+	}
+}
+
+func TestMarkerFindsShell(t *testing.T) {
+	p := NewParser()
+	p.Marker = "abc123"
+	if got := p.TickLine(); got != "abc123\n" {
+		t.Fatalf("tick: %q", got)
+	}
+	// The shell (300) is not a sibling of the monitor's sh here, so only
+	// the marker can find it; its child 301 carries the marker too and
+	// is the foreground job.
+	in := "@@NLR static\npid 900\n@@NLR ready\n@@NLR begin\n@stat\ncpu 1 0 1 8 0 0 0 0 0 0\n@proc\n" +
+		"1 0 0 -1 1 1 100 systemd\n" +
+		"200 1 0 -1 1 1 100 sshd-session\n" +
+		"300 200 34816 301 1 1 100 bash\n" +
+		"301 300 34816 301 1 1 100 vim\n" +
+		"900 1 0 -1 1 1 100 sh\n" +
+		"@env\n/proc/300/environ\n/proc/301/environ\n@cwd\n@@NLR end\n"
+	for _, l := range strings.Split(in, "\n") {
+		p.Feed(l)
+	}
+	if got := p.TickLine(); got != "abc123 301 300\n" {
+		t.Fatalf("tick: %q", got)
+	}
+	p.Marker = "bad marker; rm -rf /"
+	if got := p.TickLine(); got != "- 301 300\n" {
+		t.Fatalf("unsafe marker passed through: %q", got)
 	}
 }

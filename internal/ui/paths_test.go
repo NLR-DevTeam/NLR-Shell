@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -14,7 +15,14 @@ func TestParseLocalPaths(t *testing.T) {
 	if got, err := os.UserHomeDir(); err != nil || got != home {
 		t.Skipf("home override ignored (%q, %v)", got, err)
 	}
-	abs := filepath.Join(string(filepath.Separator), "tmp", "a.txt")
+	// Absolute paths and file URIs look different per platform: a Windows
+	// path needs a drive, and its URI carries it as the first segment.
+	root, uriPath := "/", "/"
+	if runtime.GOOS == "windows" {
+		root, uriPath = `C:\`, "/C:/"
+	}
+	abs := filepath.Join(root, "tmp", "a.txt")
+	spaced := filepath.Join(root, "tmp", "b b.txt")
 
 	cases := []struct {
 		name string
@@ -23,17 +31,17 @@ func TestParseLocalPaths(t *testing.T) {
 	}{
 		{
 			name: "uri list",
-			in:   "file:///tmp/a.txt\r\nfile:///tmp/b%20b.txt\n",
-			want: []string{abs, filepath.FromSlash("/tmp/b b.txt")},
+			in:   "file://" + uriPath + "tmp/a.txt\r\nfile://" + uriPath + "tmp/b%20b.txt\n",
+			want: []string{abs, spaced},
 		},
 		{
 			name: "localhost and comments",
-			in:   "# comment\nfile://localhost/tmp/a.txt\n\n",
+			in:   "# comment\nfile://localhost" + uriPath + "tmp/a.txt\n\n",
 			want: []string{abs},
 		},
 		{
 			name: "remote host is skipped",
-			in:   "file://otherhost/tmp/a.txt\n" + abs + "\n",
+			in:   "file://otherhost" + uriPath + "tmp/a.txt\n" + abs + "\n",
 			want: []string{abs},
 		},
 		{

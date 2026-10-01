@@ -34,6 +34,9 @@ type menu struct {
 	clicks []widget.Clickable
 	pos    image.Point
 	scrim  bool
+	// keepFocus leaves keyboard focus where it was when the menu closes,
+	// for menus that act on a focused input.
+	keepFocus bool
 }
 
 // Menu opens a popup menu at the pointer position.
@@ -49,16 +52,21 @@ func (a *App) MenuAt(pos image.Point, items ...MenuItem) {
 
 func (a *App) closeMenu() {
 	if a.menu != nil {
+		a.refocus = a.refocus || !a.menu.keepFocus
 		a.menu = nil
-		a.refocus = true
 	}
 }
+
+// shadowStrength scales the drop shadows: dark stacked layers that read as
+// depth on the dark palette turn into a grey halo on white, so the light
+// palette uses a fainter one. Theme.Apply sets it.
+var shadowStrength float32 = 1
 
 func shadow(ops *op.Ops, r image.Rectangle, radius int) {
 	for i := 1; i <= 6; i++ {
 		g := i * 2
 		rr := image.Rect(r.Min.X-g, r.Min.Y-g+i, r.Max.X+g, r.Max.Y+g+i)
-		fillRR(ops, rr, radius+g, color.NRGBA{A: uint8(26 - i*3)})
+		fillRR(ops, rr, radius+g, color.NRGBA{A: uint8(float32(26-i*3) * shadowStrength)})
 	}
 }
 
@@ -243,7 +251,11 @@ func (a *App) layoutDialogs(gtx layout.Context) {
 		top := i == len(a.dialogs)-1
 		// Scrim blocks input to everything below.
 		area := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
-		fill(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, color.NRGBA{A: 0x8c})
+		scrim := color.NRGBA{A: 0x8c}
+		if a.th.Light {
+			scrim = color.NRGBA{R: 0x1c, G: 0x21, B: 0x28, A: 0x40}
+		}
+		fill(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, scrim)
 		event.Op(gtx.Ops, d)
 		pointer.CursorDefault.Add(gtx.Ops)
 		for {
@@ -571,4 +583,53 @@ func (a *App) layoutToasts(gtx layout.Context) {
 		st.Pop()
 		y += d.Size.Y + gtx.Dp(8)
 	}
+}
+
+// Website is opened by the about dialog.
+const Website = "https://shell.nlr.simsoft.top/"
+
+// aboutDialog shows the version and links to the website.
+type aboutDialog struct {
+	closeClk, siteClk, okClk widget.Clickable
+}
+
+func (d *aboutDialog) Submit(a *App) { a.Close(d) }
+func (d *aboutDialog) Cancel(a *App) { a.Close(d) }
+
+func (d *aboutDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
+	th := a.th
+	if d.okClk.Clicked(gtx) {
+		d.Submit(a)
+	}
+	if d.siteClk.Clicked(gtx) {
+		go shellOpen(Website)
+	}
+	return a.dialogFrame(gtx, "NLR Shell", 380, &d.closeClk, d,
+		func(gtx layout.Context) layout.Dimensions {
+			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return drawLogo(gtx, gtx.Dp(48), th.Text, th.Accent)
+				}),
+				hspace(16),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return column(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return th.txt(gtx, "强大的原生 SSH 客户端", 14, th.Text)
+						}),
+						vspace(6),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							return th.txt(gtx, "版本："+Version, 13, th.Text2)
+						}),
+					)
+				}),
+			)
+		},
+		func(gtx layout.Context) layout.Dimensions {
+			return buttonRow(gtx,
+				func(gtx layout.Context) layout.Dimensions {
+					return th.button(gtx, &d.siteClk, "访问官网", nil, btnDefault)
+				},
+				func(gtx layout.Context) layout.Dimensions { return th.button(gtx, &d.okClk, "确定", nil, btnPrimary) },
+			)
+		})
 }

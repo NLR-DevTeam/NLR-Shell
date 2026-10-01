@@ -49,20 +49,22 @@ type Session struct {
 	prompter Prompter
 	notify   func()
 
-	mu       sync.Mutex
-	state    State
-	err      error
-	status   string
-	dialer   *dialer
-	client   *ssh.Client
-	chain    []*ssh.Client
-	shell    *ssh.Session
-	stdin    io.WriteCloser
-	cols     int
-	rows     int
-	closed   bool
-	cwd      string
-	cwdSeq   int
+	mu     sync.Mutex
+	state  State
+	err    error
+	status string
+	dialer *dialer
+	client *ssh.Client
+	chain  []*ssh.Client
+	shell  *ssh.Session
+	stdin  io.WriteCloser
+	cols   int
+	rows   int
+	closed bool
+	cwd    string
+	cwdSeq int
+	// markerOK is set when the server accepted LC_NLRSHELL for the shell.
+	markerOK bool
 	title    string
 	bell     time.Time
 	clip     string
@@ -255,6 +257,10 @@ func (s *Session) run(d *dialer) {
 		s.fail(friendly(err))
 		return
 	}
+	// The marker lets the monitor find this shell among the remote
+	// processes. Servers that do not accept LC_* variables refuse it; the
+	// monitor then falls back to guessing from the process tree.
+	markerOK := sh.Setenv("LC_NLRSHELL", s.ID) == nil
 	modes := ssh.TerminalModes{ssh.ECHO: 1, ssh.IUTF8: 1, ssh.TTY_OP_ISPEED: 115200, ssh.TTY_OP_OSPEED: 115200}
 	if err := sh.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		s.fail(friendly(err))
@@ -270,6 +276,7 @@ func (s *Session) run(d *dialer) {
 
 	s.mu.Lock()
 	s.shell, s.stdin = sh, stdin
+	s.markerOK = markerOK
 	s.state, s.status = StateConnected, ""
 	s.connTime = time.Now()
 	// The window may have been resized while we were connecting.
@@ -432,6 +439,11 @@ func (s *Session) runMonitor(c *ssh.Client) {
 	}
 
 	p := monitor.NewParser()
+	s.mu.Lock()
+	if s.markerOK {
+		p.Marker = s.ID
+	}
+	s.mu.Unlock()
 	var pmu sync.Mutex
 	ready := make(chan struct{})
 	stop := make(chan struct{})

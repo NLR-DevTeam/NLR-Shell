@@ -24,7 +24,7 @@ type Theme struct {
 	Mat    *material.Theme
 	Face   font.Typeface
 	Mono   font.Typeface
-	tip    tooltip
+	tip    *tooltip
 
 	Bg0      color.NRGBA // window and terminal background
 	Bg1      color.NRGBA // panels
@@ -38,16 +38,29 @@ type Theme struct {
 	Text3    color.NRGBA
 	Accent   color.NRGBA
 	AccentFg color.NRGBA
-	Blue     color.NRGBA
-	Purple   color.NRGBA
-	Warn     color.NRGBA
-	Danger   color.NRGBA
-	Select   color.NRGBA // text selection
+	// AccentText is the accent for text and thin icons: on the light
+	// palette the bright accent colors are too pale to read on white.
+	AccentText color.NRGBA
+	Blue       color.NRGBA
+	Purple     color.NRGBA
+	Warn       color.NRGBA
+	Danger     color.NRGBA
+	Select     color.NRGBA // text selection
 
+	TermBg     color.NRGBA
 	TermFg     color.NRGBA
 	TermCursor color.NRGBA
 	TermSel    color.NRGBA
 	Palette    [16]color.NRGBA
+
+	// Light reports whether the UI uses the light palette.
+	Light     bool
+	lightTerm bool
+	// term and termMat hold the terminal-palette variant (see termUI).
+	term    *Theme
+	termMat *material.Theme
+	// editMenu opens the cut/copy/paste menu of an input; set by the App.
+	editMenu func(e *widget.Editor)
 }
 
 func rgb(c uint32) color.NRGBA {
@@ -65,56 +78,139 @@ func mix(a, b color.NRGBA, t float32) color.NRGBA {
 	return color.NRGBA{R: f(a.R, b.R), G: f(a.G, b.G), B: f(a.B, b.B), A: f(a.A, b.A)}
 }
 
-// NewTheme builds the default dark theme.
-func NewTheme(monoFamily string) *Theme {
+// NewTheme builds the theme in the default dark palette.
+func NewTheme(western, cjk string) *Theme {
 	th := &Theme{
 		Shaper: text.NewShaper(text.WithCollection(gofont.Collection())),
+		tip:    new(tooltip),
 		Face:   uiFont,
+	}
 
-		Bg0:      rgb(0x0b0d10),
-		Bg1:      rgb(0x101317),
-		Bg2:      rgb(0x171b21),
-		Bg3:      rgb(0x1e242c),
-		Bg4:      rgb(0x27303a),
-		Border:   rgb(0x232a33),
-		BorderHi: rgb(0x34404d),
-		Text:     rgb(0xd9dee6),
-		Text2:    rgb(0x8d97a6),
-		Text3:    rgb(0x5a6472),
-		Accent:   rgb(0x3ddc97),
-		AccentFg: rgb(0x04130c),
-		Blue:     rgb(0x5aa9ff),
-		Purple:   rgb(0xb18cff),
-		Warn:     rgb(0xf2c45a),
-		Danger:   rgb(0xff6b6b),
-		Select:   color.NRGBA{R: 0x3d, G: 0xdc, B: 0x97, A: 0x50},
+	m := material.NewTheme()
+	m.Shaper = th.Shaper
+	m.Face = th.Face
+	m.TextSize = 13
+	th.Mat = m
+	th.SetFonts(western, cjk)
+	th.Apply(false, false, rgb(0x3ddc97))
+	return th
+}
 
-		TermFg:     rgb(0xd9dee6),
-		TermCursor: rgb(0x3ddc97),
-		TermSel:    color.NRGBA{R: 0x5a, G: 0xa9, B: 0xff, A: 0x66},
-		Palette: [16]color.NRGBA{
+// Apply switches the palette: light selects the light UI colors, lightTerm
+// also makes the terminal light, and accent replaces the brand color.
+func (th *Theme) Apply(light, lightTerm bool, accent color.NRGBA) {
+	th.setColors(light, lightTerm, accent)
+	th.lightTerm = lightTerm
+	shadowStrength = 1
+	if light {
+		shadowStrength = 0.4
+	}
+}
+
+// termUI returns the theme for UI drawn as part of the terminal, such as
+// the command bar: it follows the terminal's palette, so with a light UI
+// and a dark terminal it is the dark palette. The variant shares the
+// shaper, fonts and tooltip state.
+func (th *Theme) termUI() *Theme {
+	if !th.Light || th.lightTerm {
+		return th
+	}
+	if th.term == nil {
+		th.term, th.termMat = new(Theme), new(material.Theme)
+	}
+	// Refreshed on every use so fonts and accent changes carry over.
+	*th.term, *th.termMat = *th, *th.Mat
+	th.term.Mat, th.term.term = th.termMat, nil
+	th.term.setColors(false, false, th.Accent)
+	return th.term
+}
+
+func (th *Theme) setColors(light, lightTerm bool, accent color.NRGBA) {
+	th.Light = light
+	if light {
+		th.Bg0 = rgb(0xffffff)
+		th.Bg1 = rgb(0xf3f4f6)
+		th.Bg2 = rgb(0xffffff)
+		th.Bg3 = rgb(0xe9ebef)
+		th.Bg4 = rgb(0xdde1e6)
+		th.Border = rgb(0xe1e4e8)
+		th.BorderHi = rgb(0xd0d5db)
+		th.Text = rgb(0x1c2128)
+		th.Text2 = rgb(0x555f6b)
+		th.Text3 = rgb(0x8a929c)
+		th.Blue = rgb(0x0969da)
+		th.Purple = rgb(0x8250df)
+		th.Warn = rgb(0xbf8700)
+		th.Danger = rgb(0xd1242f)
+	} else {
+		th.Bg0 = rgb(0x0b0d10)
+		th.Bg1 = rgb(0x101317)
+		th.Bg2 = rgb(0x171b21)
+		th.Bg3 = rgb(0x1e242c)
+		th.Bg4 = rgb(0x27303a)
+		th.Border = rgb(0x232a33)
+		th.BorderHi = rgb(0x34404d)
+		th.Text = rgb(0xd9dee6)
+		th.Text2 = rgb(0x8d97a6)
+		th.Text3 = rgb(0x5a6472)
+		th.Blue = rgb(0x5aa9ff)
+		th.Purple = rgb(0xb18cff)
+		th.Warn = rgb(0xf2c45a)
+		th.Danger = rgb(0xff6b6b)
+	}
+	th.Accent = accent
+	th.AccentFg = rgb(0xffffff)
+	th.AccentText = accent
+	if light {
+		th.AccentText = mix(accent, color.NRGBA{A: 0xff}, 0.3)
+	}
+	th.Select = alpha(accent, 0x50)
+
+	if lightTerm {
+		th.TermBg = rgb(0xffffff)
+		th.TermFg = rgb(0x1f2328)
+		th.TermSel = color.NRGBA{R: 0x09, G: 0x69, B: 0xda, A: 0x40}
+		th.Palette = [16]color.NRGBA{
+			rgb(0x24292f), rgb(0xcf222e), rgb(0x116329), rgb(0x7d4e00),
+			rgb(0x0969da), rgb(0x8250df), rgb(0x1b7c83), rgb(0x6e7781),
+			rgb(0x57606a), rgb(0xa40e26), rgb(0x1a7f37), rgb(0x633c01),
+			rgb(0x218bff), rgb(0xa475f9), rgb(0x3192aa), rgb(0x8c959f),
+		}
+	} else {
+		th.TermBg = rgb(0x0b0d10)
+		th.TermFg = rgb(0xd9dee6)
+		th.TermSel = color.NRGBA{R: 0x5a, G: 0xa9, B: 0xff, A: 0x66}
+		th.Palette = [16]color.NRGBA{
 			rgb(0x1c2128), rgb(0xff6b6b), rgb(0x3ddc97), rgb(0xf2c45a),
 			rgb(0x5aa9ff), rgb(0xc58cff), rgb(0x4fd6d6), rgb(0xc9d1d9),
 			rgb(0x5a6472), rgb(0xff8f8f), rgb(0x7ff0ba), rgb(0xffd98a),
 			rgb(0x8cc4ff), rgb(0xd9b3ff), rgb(0x8be9e9), rgb(0xffffff),
-		},
+		}
 	}
-	th.SetMono(monoFamily)
-	m := material.NewTheme()
-	m.Shaper = th.Shaper
-	m.Face = th.Face
-	m.Palette = material.Palette{Bg: th.Bg1, Fg: th.Text, ContrastBg: th.Accent, ContrastFg: th.AccentFg}
-	m.TextSize = 13
-	th.Mat = m
-	return th
+	th.TermCursor = accent
+	th.Mat.Palette = material.Palette{Bg: th.Bg1, Fg: th.Text, ContrastBg: th.Accent, ContrastFg: th.AccentFg}
 }
 
-// SetMono changes the terminal font family, keeping sensible fallbacks.
-func (th *Theme) SetMono(family string) {
-	if family == "" {
-		family = defaultMono
+// SetFonts sets the Western font, used first in the terminal, and the
+// Chinese font, which the terminal falls back to for characters the
+// Western font lacks and which the whole UI uses. Built-in fallbacks follow
+// both, so a missing font degrades instead of showing boxes.
+func (th *Theme) SetFonts(western, cjk string) {
+	if western == "" {
+		western = defaultMono
 	}
-	th.Mono = font.Typeface(family + ", " + monoFallbacks)
+	cjkList := ""
+	if cjk != "" {
+		cjkList = cjk + ", "
+	}
+	// The Chinese font comes after the monospace Latin fallbacks: if the
+	// Western font is missing, Latin text must not land on a proportional
+	// CJK font. Characters no Latin font has still reach the Chinese one.
+	th.Mono = font.Typeface(western + ", " + monoFallbacks + ", " + cjkList + cjkFallbacks)
+	th.Face = font.Typeface(cjkList + uiFont)
+	if th.Mat != nil {
+		th.Mat.Face = th.Face
+	}
 }
 
 // TermColor resolves a palette index to a color.
@@ -307,4 +403,9 @@ func hspace(dp unit.Dp) layout.FlexChild {
 
 func vspace(dp unit.Dp) layout.FlexChild {
 	return layout.Rigid(layout.Spacer{Height: dp}.Layout)
+}
+
+// vspaceW is vertical space as a plain widget.
+func vspaceW(dp unit.Dp) layout.Widget {
+	return layout.Spacer{Height: dp}.Layout
 }

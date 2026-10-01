@@ -15,11 +15,11 @@ import (
 // must open above it and hand the chosen folder back to the field.
 func (d *driver) settingsPickerShot(want func(string) bool) {
 	// The settings dialog is centered and 520dp wide with a fixed layout;
-	// the button sits just inside its right edge, in the third row of
-	// fields (see settingsDialog.Layout).
+	// 浏览 sits just inside its right edge, in the download-folder row
+	// (see settingsDialog.Layout).
 	right := (float32(d.size.X) + d.px(520)) / 2
-	top := (float32(d.size.Y) - d.px(431)) / 2
-	d.click(right-d.px(26), top+d.px(219), pointer.ButtonPrimary)
+	top := (float32(d.size.Y) - d.px(620)) / 2
+	d.click(right-d.px(51), top+d.px(416), pointer.ButtonPrimary)
 	d.until("settings picker", func() bool { return d.a.DialogCount() == 2 })
 	if d.a.DialogCount() != 2 {
 		fmt.Fprintln(os.Stderr, "picker: 浏览 did not open the picker")

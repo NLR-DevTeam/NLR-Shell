@@ -185,6 +185,25 @@ func (d *driver) click(x, y float32, btn pointer.Buttons) {
 	d.frame()
 }
 
+// drag presses the left button at (x0, y0), moves to (x1, y1) in steps
+// and releases there.
+func (d *driver) drag(x0, y0, x1, y1 float32) {
+	d.move(x0, y0)
+	d.router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: f32.Pt(x0, y0)})
+	d.frame()
+	const steps = 8
+	for i := 1; i <= steps; i++ {
+		p := f32.Pt(x0+(x1-x0)*float32(i)/steps, y0+(y1-y0)*float32(i)/steps)
+		// The platform reports moves; the router turns them into drags
+		// while a button is held.
+		d.router.Queue(pointer.Event{Kind: pointer.Move, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: p})
+		d.frame()
+	}
+	d.router.Queue(pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: f32.Pt(x1, y1)})
+	d.frame()
+	d.frame()
+}
+
 func (d *driver) key(name key.Name, mods key.Modifiers) {
 	d.router.Queue(key.Event{Name: name, Modifiers: mods, State: key.Press})
 	d.frame()
@@ -222,6 +241,7 @@ func main() {
 	h := flag.Int("h", 800, "height in dp")
 	scale := flag.Float64("scale", 1, "pixels per dp")
 	only := flag.String("only", "", "comma separated list of shots to take (default all)")
+	bgImage := flag.String("bg", "build/icon.png", "image for the background shot")
 	flag.Parse()
 	want := func(name string) bool {
 		return *only == "" || strings.Contains(","+*only+",", ","+name+",")
@@ -240,7 +260,9 @@ func main() {
 	// a known one so the screenshots are deterministic.
 	if home, err := os.MkdirTemp("", "nlrshot-home"); err == nil {
 		defer os.RemoveAll(home)
+		// os.UserHomeDir reads HOME on Unix and USERPROFILE on Windows.
 		os.Setenv("HOME", home)
+		os.Setenv("USERPROFILE", home)
 		os.MkdirAll(filepath.Join(home, "docs"), 0o755)
 		os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
 		os.WriteFile(filepath.Join(home, "notes.txt"), []byte("hello\n"), 0o644)
@@ -334,6 +356,82 @@ func main() {
 		d.shot("settings")
 		d.settingsPickerShot(want)
 		d.key(key.NameEscape, 0)
+	}
+	if want("drag-file") {
+		// Drag go.mod (second row) onto src (first row): it must move there.
+		rowY := func(i int) float32 { return float32(size.Y) - d.px(800-627) + d.px(26)*float32(i) }
+		d.drag(d.px(500), rowY(1), d.px(500), rowY(0))
+		fs := srv.FS()
+		moved := func() bool { _, err := fs.Stat("/home/demo/projects/api/src/go.mod"); return err == nil }
+		d.until("file moved by drag", moved)
+		if !moved() {
+			fail("dragging go.mod onto src did not move it")
+		}
+		fs.Close()
+		fmt.Printf("%-14s %s\n", "drag-file", time.Since(d.start).Round(time.Millisecond))
+	}
+	if want("drag-tab") {
+		// Open a second tab, then drag the session tab past it.
+		a.OpenRemote("/etc/hosts", 60)
+		d.until("second tab", func() bool { return a.TabCount() == 2 })
+		before := a.TabTitles()
+		d.drag(d.px(220), d.px(20), d.px(560), d.px(20))
+		after := a.TabTitles()
+		if len(after) != 2 || after[0] != before[1] || after[1] != before[0] {
+			fail("tab drag did not reorder: %v -> %v", before, after)
+		}
+		d.shot("drag-tab")
+		d.click(d.px(220), d.px(20), pointer.ButtonTertiary)
+		d.until("tab closed", func() bool { return a.TabCount() == 1 })
+		fmt.Printf("%-14s %v -> %v\n", "drag-tab", before, after)
+	}
+	if want("quick") {
+		st.SaveSnippet(store.Snippet{Name: "磁盘占用", Command: "df -h"})
+		st.SaveSnippet(store.Snippet{Name: "重启 nginx", Command: "sudo systemctl restart nginx"})
+		st.SaveSnippet(store.Snippet{Name: "uptime", Command: "uptime"})
+		a.ShowQuickCommands(true)
+		d.run(150 * time.Millisecond)
+		d.shot("quick")
+		a.ShowQuickCommands(false)
+	}
+	if want("perm") {
+		a.OpenPermissions("src")
+		d.run(400 * time.Millisecond)
+		d.shot("perm")
+		d.key(key.NameEscape, 0)
+	}
+	if want("input-menu") {
+		// Right-click the command bar input.
+		d.click(d.px(700), float32(size.Y)-d.px(21+float32(272)), pointer.ButtonSecondary)
+		d.shot("input-menu")
+		d.key(key.NameEscape, 0)
+	}
+	if want("background") {
+		a.SetBackground(*bgImage)
+		d.until("background", a.BackgroundLoaded)
+		d.shot("background")
+		a.SetLook(store.AppearanceLight, store.AccentGreen)
+		d.run(150 * time.Millisecond)
+		d.shot("background-light")
+		a.SetLook(store.AppearanceDark, store.AccentGreen)
+		a.SetBackground("")
+	}
+	if want("fonts") {
+		a.OpenSettings()
+		d.run(100 * time.Millisecond)
+		a.OpenFontList()
+		d.run(1500 * time.Millisecond)
+		d.shot("fonts")
+		d.key(key.NameEscape, 0)
+	}
+	if want("light") {
+		a.SetLook(store.AppearanceLight, store.AccentBlue)
+		d.run(150 * time.Millisecond)
+		d.shot("light")
+		a.SetLook(store.AppearanceLightTerm, store.AccentOrange)
+		d.run(150 * time.Millisecond)
+		d.shot("light-term")
+		a.SetLook(store.AppearanceDark, store.AccentGreen)
 	}
 	if want("transfers") {
 		sess().Transfers.Download("/var/log/syslog", filepath.Join(dir, "dl"))

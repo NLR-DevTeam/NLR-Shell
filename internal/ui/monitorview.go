@@ -29,6 +29,7 @@ const maxProcRows = 14
 type monitorView struct {
 	sv   *sessionView
 	list widget.List
+	fade listFade
 
 	sortMem        bool
 	cpuHdr, memHdr widget.Clickable
@@ -101,7 +102,7 @@ func usageColor(th *Theme, pct float64) color.NRGBA {
 	case pct >= 75:
 		return th.Warn
 	}
-	return th.Accent
+	return th.AccentText
 }
 
 // section draws a titled block with a value on the right of the title.
@@ -231,7 +232,7 @@ func (m *monitorView) Layout(gtx layout.Context) layout.Dimensions {
 	sections = append(sections, func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: 16}.Layout(gtx) })
 
 	gtx.Constraints = layout.Exact(size)
-	th.list(gtx, &m.list, len(sections), func(gtx layout.Context, i int) layout.Dimensions {
+	th.autoHideList(gtx, &m.list, &m.fade, len(sections), func(gtx layout.Context, i int) layout.Dimensions {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
 		return sections[i](gtx)
 	})
@@ -470,7 +471,7 @@ func (m *monitorView) processes(d sshx.MonitorData) layout.Widget {
 				return clk.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 					c := th.Text3
 					if active {
-						c = th.Accent
+						c = th.AccentText
 						label += " ↓"
 					} else if clk.Hovered() {
 						c = th.Text2
