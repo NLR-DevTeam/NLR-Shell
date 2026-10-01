@@ -1,0 +1,12 @@
+# Build output
+*.exe
+*.exe~
+
+# Off-screen renderer output (cmd/shot)
+/shots/
+/*.png
+
+# Editor and OS clutter
+.vscode/
+.idea/
+Thumbs.db
