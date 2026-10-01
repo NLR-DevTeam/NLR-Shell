@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=NLR Shell
+Comment=SSH manager: terminal, monitor, SFTP and port forwarding
+Comment[zh_CN]=轻量、纯净、好用的 SSH 管理工具
+Exec=NLRShell
+Icon=nlrshell
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=ssh;sftp;terminal;
+StartupNotify=true
+StartupWMClass=nlrshell

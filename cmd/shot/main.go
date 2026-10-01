@@ -8,17 +8,21 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"gioui.org/app"
 	"gioui.org/f32"
 	"gioui.org/gpu/headless"
 	"gioui.org/io/input"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/io/system"
+	"gioui.org/io/transfer"
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -29,14 +33,22 @@ import (
 	"nlrshell/internal/ui"
 )
 
-type host struct{}
+// host records the window mode the titlebar buttons ask for; the shot
+// renderer has no window system to apply it to.
+type host struct {
+	mode app.WindowMode
+}
 
-func (host) Invalidate()           {}
-func (host) Perform(system.Action) {}
-func (host) HWND() uintptr         { return 0 }
+func (h *host) Invalidate()           {}
+func (h *host) Perform(system.Action) {}
+func (h *host) HWND() uintptr         { return 0 }
+func (h *host) SetWindowMode(m app.WindowMode) {
+	h.mode = m
+}
 
 type driver struct {
 	a      *ui.App
+	host   *host
 	router *input.Router
 	ops    op.Ops
 	win    *headless.Window
@@ -44,6 +56,48 @@ type driver struct {
 	scale  float32
 	dir    string
 	start  time.Time
+	// clipboard answers clipboard reads the way the window systems do.
+	clipboard string
+}
+
+// fail prints a diagnostic and stops the renderer.
+func fail(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "shot: "+format+"\n", args...)
+	os.Exit(1)
+}
+
+// windowButtonsShot clicks the titlebar window buttons and checks that they
+// ask the host for a window mode. Gio only implements window states in its
+// option handling, so the buttons must not call Window.Perform.
+func (d *driver) windowButtonsShot(want func(string) bool) {
+	if !want("window-buttons") {
+		return
+	}
+	const btnW, titleH = 46, 20
+	w := float32(d.size.X)
+	if d.a.WindowButtonsHidden() {
+		fail("window buttons are hidden; the shot renderer draws an undecorated window")
+	}
+	click := func(i int) {
+		d.click(w-d.px(float32((3-i)*btnW))+d.px(btnW/2), d.px(titleH), pointer.ButtonPrimary)
+	}
+	click(0)
+	if d.host.mode != app.Minimized {
+		fail("minimize button asked for mode %v", d.host.mode)
+	}
+	click(1)
+	if d.host.mode != app.Maximized {
+		fail("maximize button asked for mode %v", d.host.mode)
+	}
+	// While maximized the same button restores the window.
+	d.a.SetMaximized(true)
+	click(1)
+	if d.host.mode != app.Windowed {
+		fail("restore button asked for mode %v", d.host.mode)
+	}
+	d.a.SetMaximized(false)
+	d.run(50 * time.Millisecond)
+	fmt.Printf("%-14s %s\n", "window-buttons", time.Since(d.start).Round(time.Millisecond))
 }
 
 func (d *driver) frame() {
@@ -57,6 +111,14 @@ func (d *driver) frame() {
 	}
 	d.a.Layout(gtx)
 	d.router.Frame(gtx.Ops)
+	// Stand in for the window system's clipboard: when the app asks to
+	// read it, hand it the text set for the current scenario.
+	if d.router.ClipboardRequested() {
+		text := d.clipboard
+		d.router.Queue(transfer.DataEvent{Type: "application/text", Open: func() io.ReadCloser {
+			return io.NopCloser(strings.NewReader(text))
+		}})
+	}
 }
 
 // run renders frames for the given duration so background work can land.
@@ -174,6 +236,16 @@ func main() {
 
 	dir, _ := os.MkdirTemp("", "nlrshot")
 	defer os.RemoveAll(dir)
+	// The built-in file picker (Linux) browses the home directory; give it
+	// a known one so the screenshots are deterministic.
+	if home, err := os.MkdirTemp("", "nlrshot-home"); err == nil {
+		defer os.RemoveAll(home)
+		os.Setenv("HOME", home)
+		os.MkdirAll(filepath.Join(home, "docs"), 0o755)
+		os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
+		os.WriteFile(filepath.Join(home, "notes.txt"), []byte("hello\n"), 0o644)
+		os.WriteFile(filepath.Join(home, "backup.tar.gz"), []byte("data"), 0o644)
+	}
 	st := store.Open(dir)
 	st.UpdateSettings(func(s *store.Settings) { s.DownloadDir = filepath.Join(dir, "dl") })
 	now := time.Now().Unix()
@@ -191,14 +263,20 @@ func main() {
 		os.Exit(1)
 	}
 	defer win.Release()
-	a := ui.New(host{}, st)
-	d := &driver{a: a, router: new(input.Router), win: win, size: size, scale: float32(*scale), dir: *out, start: time.Now()}
+	winHost := &host{}
+	a := ui.New(winHost, st)
+	// The shot renderer shows the layout the release builds use: both
+	// Windows and the patched Linux build run without platform decorations
+	// (see tools/giopatch/gioui-fixes.patch).
+	a.SetDecorated(false)
+	d := &driver{a: a, host: winHost, router: new(input.Router), win: win, size: size, scale: float32(*scale), dir: *out, start: time.Now()}
 	os.MkdirAll(*out, 0o755)
 
 	d.run(200 * time.Millisecond)
 	if want("home") {
 		d.shot("home")
 	}
+	d.windowButtonsShot(want)
 	if want("home-search") {
 		d.typeText("root@172.16.8.4:2200")
 		d.shot("home-search")
@@ -210,6 +288,7 @@ func main() {
 		d.shot("profile")
 		d.key(key.NameEscape, 0)
 	}
+	d.pickerShot(want)
 
 	// Connect to the demo host by typing its name and pressing Enter.
 	d.typeText("nlr-demo\n")
@@ -249,10 +328,11 @@ func main() {
 		d.shot("tunnels")
 		d.key(key.NameEscape, 0)
 	}
-	if want("settings") {
+	if want("settings") || want("settings-picker") {
 		a.OpenSettings()
 		d.run(100 * time.Millisecond)
 		d.shot("settings")
+		d.settingsPickerShot(want)
 		d.key(key.NameEscape, 0)
 	}
 	if want("transfers") {
@@ -263,6 +343,36 @@ func main() {
 		d.run(700 * time.Millisecond)
 		d.shot("transfers")
 		a.ShowTasks(false)
+	}
+	if want("paste") {
+		// Pasting a file list from the file manager uploads those files.
+		// The text goes through the driver's clipboard stand-in, so this
+		// covers the Ctrl+V binding and the clipboard read as well.
+		local := filepath.Join(dir, "pasted-notes.txt")
+		os.WriteFile(local, []byte("pasted\n"), 0o644)
+		d.clipboard = (&url.URL{Scheme: "file", Path: local}).String() + "\n" + local + "\n"
+		d.click(d.px(500), float32(d.size.Y)-d.px(150), pointer.ButtonPrimary)
+		d.key("V", key.ModCtrl)
+		d.run(100 * time.Millisecond)
+		uploaded := func() bool {
+			for _, ti := range sess().Transfers.List() {
+				if ti.Upload && ti.Name == "pasted-notes.txt" {
+					return true
+				}
+			}
+			return false
+		}
+		d.until("paste upload", uploaded)
+		if !uploaded() {
+			fail("paste did not upload %s", local)
+		}
+		d.run(500 * time.Millisecond)
+		for _, ti := range sess().Transfers.List() {
+			if ti.Upload && ti.Name == "pasted-notes.txt" && ti.State == sshx.TransferFailed {
+				fail("paste upload failed: %s", ti.Err)
+			}
+		}
+		fmt.Printf("%-14s %s\n", "paste", time.Since(d.start).Round(time.Millisecond))
 	}
 	if want("editor") {
 		a.OpenRemote("/etc/nginx/nginx.conf", 200)

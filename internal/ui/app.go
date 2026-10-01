@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"gioui.org/app"
 	"gioui.org/font"
 	"gioui.org/io/event"
 	"gioui.org/io/key"
@@ -26,8 +27,13 @@ import (
 type Host interface {
 	// Invalidate requests a new frame; safe to call from any goroutine.
 	Invalidate()
-	// Perform executes a window action such as minimize or close.
+	// Perform executes a window action such as close or move.
 	Perform(system.Action)
+	// SetWindowMode changes the window state (windowed, maximized or
+	// minimized). The titlebar buttons use it because the Gio backends
+	// implement window states as options; their Perform only handles the
+	// pointer gestures and closing.
+	SetWindowMode(app.WindowMode)
 	// HWND returns the native window handle, or 0 if there is none.
 	HWND() uintptr
 }
@@ -53,8 +59,12 @@ type App struct {
 	size      image.Point
 	pxPerDp   float32
 	maximized bool
-	refocus   bool
-	setDirty  time.Time
+	decorated bool
+	// unattended is set for -connect: the connection must not open dialogs,
+	// so host keys are trusted and missing credentials fail the connection.
+	unattended bool
+	refocus    bool
+	setDirty   time.Time
 
 	menu    *menu
 	dialogs []Dialog
@@ -80,6 +90,16 @@ func (a *App) Theme() *Theme { return a.th }
 
 // SetMaximized tells the app whether the window is maximized.
 func (a *App) SetMaximized(m bool) { a.maximized = m }
+
+// SetDecorated tells the app whether the platform draws the window
+// decorations. Windows requests a borderless window, but X11 and Wayland
+// always decorate, so the in-app window buttons are dropped there.
+func (a *App) SetDecorated(on bool) { a.decorated = on }
+
+// SetUnattended makes connection prompts go away: host keys are trusted
+// without asking and anything else that would need input fails instead of
+// opening a dialog. The -connect option sets it.
+func (a *App) SetUnattended(on bool) { a.unattended = on }
 
 // RememberWindow records the window size (in dp) and state so the next
 // launch restores it. It must be called from the UI goroutine.
@@ -140,9 +160,10 @@ func (a *App) Shutdown() {
 	a.ext.cleanup()
 }
 
-// DropFiles handles files dragged onto the window from Explorer by
+// DropFiles handles files dragged onto the window from the file manager by
 // uploading them to the directory shown in the active tab's file panel. It
-// is safe to call from any goroutine.
+// is safe to call from any goroutine. Only Windows installs a drop handler;
+// Gio's X11 and Wayland backends do not deliver drag-and-drop events.
 func (a *App) DropFiles(paths []string) {
 	a.Post(func() {
 		if len(a.dialogs) > 0 {
@@ -367,13 +388,13 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 		}
 	}
 	if a.winBtns[0].Clicked(gtx) {
-		a.host.Perform(system.ActionMinimize)
+		a.host.SetWindowMode(app.Minimized)
 	}
 	if a.winBtns[1].Clicked(gtx) {
 		if a.maximized {
-			a.host.Perform(system.ActionUnmaximize)
+			a.host.SetWindowMode(app.Windowed)
 		} else {
-			a.host.Perform(system.ActionMaximize)
+			a.host.SetWindowMode(app.Maximized)
 		}
 	}
 	if a.winBtns[2].Clicked(gtx) {
@@ -433,31 +454,35 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 		})
 	})
 
-	// Right: window buttons and tools; measured first so tabs know their room.
+	// Right: window buttons and tools; measured first so tabs know their
+	// room. The buttons are only drawn when the platform does not provide
+	// window decorations of its own (Linux/X11 and Wayland always do).
 	btnW := gtx.Dp(46)
-	right := w - 3*btnW
-	for i := 0; i < 3; i++ {
-		i := i
-		at(right+i*btnW, func(gtx layout.Context) layout.Dimensions {
-			sz := image.Pt(btnW, h)
-			return a.winBtns[i].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				fg := th.Text2
-				if a.winBtns[i].Hovered() {
-					c := th.Bg3
-					fg = th.Text
-					if i == 2 {
-						c, fg = rgb(0xe5484d), color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+	right := w
+	if !a.decorated {
+		right -= 3 * btnW
+		for i := range 3 {
+			at(right+i*btnW, func(gtx layout.Context) layout.Dimensions {
+				sz := image.Pt(btnW, h)
+				return a.winBtns[i].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					fg := th.Text2
+					if a.winBtns[i].Hovered() {
+						c := th.Bg3
+						fg = th.Text
+						if i == 2 {
+							c, fg = rgb(0xe5484d), color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+						}
+						fill(gtx.Ops, image.Rectangle{Max: sz}, c)
 					}
-					fill(gtx.Ops, image.Rectangle{Max: sz}, c)
-				}
-				kind := []int{0, 1, 3}[i]
-				if i == 1 && a.maximized {
-					kind = 2
-				}
-				drawWinGlyph(gtx.Ops, kind, image.Pt(sz.X/2, sz.Y/2), float32(gtx.Dp(10)), fg, float32(gtx.Dp(1)))
-				return layout.Dimensions{Size: sz}
+					kind := []int{0, 1, 3}[i]
+					if i == 1 && a.maximized {
+						kind = 2
+					}
+					drawWinGlyph(gtx.Ops, kind, image.Pt(sz.X/2, sz.Y/2), float32(gtx.Dp(10)), fg, float32(gtx.Dp(1)))
+					return layout.Dimensions{Size: sz}
+				})
 			})
-		})
+		}
 	}
 	tool := gtx.Dp(32)
 	type toolBtn struct {

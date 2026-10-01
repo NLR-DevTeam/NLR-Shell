@@ -352,24 +352,15 @@ func (a *authState) keySigners() ([]ssh.Signer, error) {
 }
 
 func (a *authState) agentSigners() ([]ssh.Signer, error) {
-	conn, err := os.OpenFile(`\\.\pipe\openssh-ssh-agent`, os.O_RDWR, 0)
+	conn, err := dialAgent()
 	if err != nil {
-		return nil, errors.New("无法连接 OpenSSH Agent（请确认 ssh-agent 服务已启动）")
+		return nil, err
 	}
-	if err := a.d.track(pipeConn{conn}); err != nil {
+	if err := a.d.track(conn); err != nil {
 		return nil, err
 	}
 	return agent.NewClient(conn).Signers()
 }
-
-// pipeConn adapts the agent pipe so it is closed together with the dialer.
-type pipeConn struct{ *os.File }
-
-func (pipeConn) LocalAddr() net.Addr              { return nil }
-func (pipeConn) RemoteAddr() net.Addr             { return nil }
-func (pipeConn) SetDeadline(time.Time) error      { return nil }
-func (pipeConn) SetReadDeadline(time.Time) error  { return nil }
-func (pipeConn) SetWriteDeadline(time.Time) error { return nil }
 
 func expandHome(p string) string {
 	if strings.HasPrefix(p, "~") {

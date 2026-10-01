@@ -15,6 +15,10 @@ func (a *App) DialogCount() int { return len(a.dialogs) }
 // MenuOpen reports whether a popup menu is showing.
 func (a *App) MenuOpen() bool { return a.menu != nil }
 
+// WindowButtonsHidden reports whether the titlebar leaves the window
+// buttons to the platform because it draws its own decorations.
+func (a *App) WindowButtonsHidden() bool { return a.decorated }
+
 // Sessions returns the sessions of all open tabs.
 func (a *App) Sessions() []*sshx.Session {
 	var out []*sshx.Session

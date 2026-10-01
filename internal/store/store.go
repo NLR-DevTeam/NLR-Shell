@@ -1,6 +1,6 @@
 // Package store persists connection profiles and settings as JSON under the
-// user's config directory. Secrets are encrypted with Windows DPAPI so they
-// can only be read by the same Windows user.
+// user's config directory. Secrets are encrypted at rest: with Windows DPAPI
+// on Windows, and with a local key file on other systems (see secret_*.go).
 package store
 
 import (
@@ -122,7 +122,7 @@ type Settings struct {
 // DefaultSettings returns the settings used on first run.
 func DefaultSettings() Settings {
 	return Settings{
-		FontFamily:      "Cascadia Mono",
+		FontFamily:      defaultFont,
 		FontSize:        14,
 		Scrollback:      10000,
 		SidebarWidth:    264,
@@ -151,8 +151,9 @@ type Store struct {
 }
 
 // Dir returns the application data directory, creating it if needed. It is
-// %APPDATA%\NLR Shell unless the NLRSHELL_DATA environment variable points
-// elsewhere (useful for a portable install).
+// %APPDATA%\NLR Shell on Windows and $XDG_CONFIG_HOME/nlrshell on other
+// systems, unless the NLRSHELL_DATA environment variable points elsewhere
+// (useful for a portable install).
 func Dir() string {
 	dir := os.Getenv("NLRSHELL_DATA")
 	if dir == "" {
@@ -160,7 +161,7 @@ func Dir() string {
 		if err != nil {
 			base = "."
 		}
-		dir = filepath.Join(base, "NLR Shell")
+		dir = filepath.Join(base, appDir)
 	}
 	os.MkdirAll(dir, 0o700)
 	return dir
@@ -195,7 +196,7 @@ func Open(dir string) *Store {
 	}
 	if st.DownloadDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {
-			st.DownloadDir = filepath.Join(home, "Downloads")
+			st.DownloadDir = defaultDownloadDir(home)
 		}
 	}
 	return s

@@ -3,6 +3,9 @@ package store
 import "testing"
 
 func TestSecretRoundTrip(t *testing.T) {
+	// The key file lives in the data directory; keep the test off the
+	// real user configuration.
+	t.Setenv("NLRSHELL_DATA", t.TempDir())
 	enc := Encrypt("p@ss 密码")
 	if enc == "" || enc == "p@ss 密码" {
 		t.Fatalf("not encrypted: %q", enc)
