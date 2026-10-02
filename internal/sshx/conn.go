@@ -94,6 +94,13 @@ func (d *dialer) dial(p store.Profile, depth int) ([]*ssh.Client, error) {
 		}
 		d.status("经由 " + jp.Title() + " 连接 " + addr + " …")
 		conn, err = chain[0].Dial("tcp", addr)
+	} else if p.ProxyType != store.ProxyNone {
+		d.status("经由代理 " + p.ProxyAddr + " 连接 " + addr + " …")
+		// Proxy errors already say what went wrong; friendly would take
+		// a refusal for one by the SSH server.
+		if conn, err = dialProxy(p.ProxyType, p.ProxyAddr, addr, 15*time.Second); err != nil {
+			return nil, err
+		}
 	} else {
 		d.status("正在连接 " + addr + " …")
 		conn, err = net.DialTimeout("tcp", addr, 15*time.Second)
@@ -314,23 +321,35 @@ func (a *authState) interactive(name, instruction string, questions []string, ec
 }
 
 func (a *authState) keySigners() ([]ssh.Signer, error) {
-	path := expandHome(a.p.KeyPath)
-	if path == "" {
-		return nil, errors.New("未指定私钥文件")
-	}
-	pem, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取私钥失败: %w", err)
+	// path names the key in the passphrase prompt.
+	var (
+		path string
+		pem  []byte
+	)
+	if a.p.KeyData != "" {
+		path = "手动输入的私钥"
+		if pem = []byte(store.Decrypt(a.p.KeyData)); len(pem) == 0 {
+			return nil, errors.New("无法解密保存的私钥，请重新输入")
+		}
+	} else {
+		path = expandHome(a.p.KeyPath)
+		if path == "" {
+			return nil, errors.New("未指定私钥文件")
+		}
+		var err error
+		if pem, err = os.ReadFile(path); err != nil {
+			return nil, fmt.Errorf("读取私钥失败: %w", err)
+		}
 	}
 	signer, err := ssh.ParsePrivateKey(pem)
 	if err == nil {
 		return []ssh.Signer{signer}, nil
 	}
+	if err := CheckPrivateKey(pem); err != nil {
+		return nil, err
+	}
 	var missing *ssh.PassphraseMissingError
 	if !errors.As(err, &missing) {
-		if strings.HasPrefix(string(pem), "PuTTY-User-Key-File") {
-			return nil, errors.New("不支持 PuTTY .ppk 格式，请用 PuTTYgen 导出为 OpenSSH 格式")
-		}
 		return nil, fmt.Errorf("解析私钥失败: %w", err)
 	}
 	if pp := store.Decrypt(a.p.Passphrase); pp != "" {
@@ -349,6 +368,20 @@ func (a *authState) keySigners() ([]ssh.Signer, error) {
 		}
 	}
 	return nil, errors.New("私钥口令不正确")
+}
+
+// CheckPrivateKey reports whether pem holds a private key that can be
+// used, possibly after asking for its passphrase.
+func CheckPrivateKey(pem []byte) error {
+	_, err := ssh.ParseRawPrivateKey(pem)
+	var missing *ssh.PassphraseMissingError
+	switch {
+	case err == nil, errors.As(err, &missing):
+		return nil
+	case strings.HasPrefix(strings.TrimSpace(string(pem)), "PuTTY-User-Key-File"):
+		return errors.New("不支持 PuTTY .ppk 格式，请用 PuTTYgen 导出为 OpenSSH 格式")
+	}
+	return fmt.Errorf("解析私钥失败: %w", err)
 }
 
 func (a *authState) agentSigners() ([]ssh.Signer, error) {

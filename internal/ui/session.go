@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/color"
 	"io"
+	"net"
+	"strconv"
 	"strings"
 
 	"gioui.org/font"
@@ -82,6 +84,17 @@ func newSessionView(a *App, p store.Profile) *sessionView {
 
 func (sv *sessionView) title() string {
 	return sv.sess.Profile.Title()
+}
+
+// secrets are the parts of status messages that privacy mode hides: the
+// server's address in its usual spellings.
+func (sv *sessionView) secrets() []string {
+	p := sv.sess.Profile
+	port := p.Port
+	if port == 0 {
+		port = 22
+	}
+	return []string{p.Addr(), net.JoinHostPort(p.Host, strconv.Itoa(port)), p.Host, p.ProxyAddr}
 }
 
 func (sv *sessionView) tipCard() []tipRow  { return sessionTip(sv.sess) }
@@ -287,11 +300,13 @@ func (sv *sessionView) layoutTerminal(gtx layout.Context, state sshx.State, stat
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return th.txtW(gtx, sv.sess.Profile.Addr(), 14, th.Text, font.Medium)
+							return th.secretTxtW(gtx, sv.sess.Profile.Addr(), 14, th.Text, font.Medium)
 						}),
 						vspace(3),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return th.txt(gtx, status, 12, th.Text2)
+							return th.secretIn(gtx, status, sv.secrets(), func(gtx layout.Context, s string, c color.NRGBA) layout.Dimensions {
+								return th.txt(gtx, s, 12, c)
+							}, th.Text2)
 						}),
 					)
 				}),
@@ -328,7 +343,11 @@ func (sv *sessionView) layoutTerminal(gtx layout.Context, state sshx.State, stat
 				hspace(10),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 					gtx.Constraints.Min.X = 0
-					return Label{Text: msg, Size: 13, Color: th.Text, MaxLines: 2}.Layout(gtx, th)
+					l := Label{Text: msg, Size: 13, Color: th.Text, MaxLines: 2}
+					return th.secretIn(gtx, msg, sv.secrets(), func(gtx layout.Context, s string, c color.NRGBA) layout.Dimensions {
+						l.Text, l.Color = s, c
+						return l.Layout(gtx, th)
+					}, l.Color)
 				}),
 				hspace(14),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {

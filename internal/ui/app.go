@@ -80,6 +80,8 @@ type App struct {
 	drag                              tabDrag
 	winBtns                           [3]widget.Clickable
 	sideBtn, filesBtn, tunBtn, setBtn widget.Clickable
+	privBtn                           widget.Clickable
+	privLast                          time.Time
 	homeRC                            rightClick
 }
 
@@ -276,6 +278,10 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.shortcuts(gtx)
 
 	a.closeOnExit()
+	if a.privBtn.Clicked(gtx) {
+		a.updateSettings(func(s *store.Settings) { s.Privacy = !s.Privacy })
+	}
+	a.stepPrivacy(gtx)
 
 	root := clip.Rect{Max: a.size}.Push(gtx.Ops)
 	event.Op(gtx.Ops, a)
@@ -543,12 +549,14 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 		active bool
 		title  string
 	}
-	tools := []toolBtn{{&a.setBtn, icSettings, false, "设置"}}
+	privacy := toolBtn{&a.privBtn, icEyeOff, a.set.Privacy, "隐私模式"}
+	tools := []toolBtn{privacy, {&a.setBtn, icSettings, false, "设置"}}
 	if sv := a.current(); sv != nil {
 		tools = []toolBtn{
 			{&a.sideBtn, icMonitor, a.set.ShowSidebar, "监控"},
 			{&a.filesBtn, icFiles, a.set.ShowFiles, "文件"},
 			{&a.tunBtn, icTunnel, sv.activeForwards() > 0, "端口转发"},
+			privacy,
 			{&a.setBtn, icSettings, false, "设置"},
 		}
 	}
@@ -562,7 +570,7 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 
 	// Tabs.
 	x = at(x, func(gtx layout.Context) layout.Dimensions {
-		d := a.layoutTab(gtx, &a.homeClk, nil, icHome, "主页", color.NRGBA{}, a.active == -1, gtx.Dp(84), h)
+		d := a.layoutTab(gtx, &a.homeClk, nil, icHome, "主页", false, color.NRGBA{}, a.active == -1, gtx.Dp(84), h)
 		addTabPointer(gtx, &a.homeChrome, image.Rectangle{Max: d.Size})
 		return d
 	})
@@ -593,7 +601,10 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 		if c.tabClick.Hovered() && !c.tabClose.Hovered() && dragX < 0 {
 			th.tip.hoverCard(gtx, c, t.tipCard())
 		}
-		d := a.layoutTab(gtx, &c.tabClick, &c.tabClose, t.icon(), t.title(), t.dot(a.active == i), a.active == i, tabW, h)
+		// A session without a name is titled with its host.
+		sv, isSession := t.(*sessionView)
+		secret := isSession && sv.sess.Profile.Name == ""
+		d := a.layoutTab(gtx, &c.tabClick, &c.tabClose, t.icon(), t.title(), secret, t.dot(a.active == i), a.active == i, tabW, h)
 		addTabPointer(gtx, c, image.Rectangle{Max: d.Size})
 		st.Pop()
 	}
@@ -622,7 +633,7 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 }
 
 // layoutTab draws one tab. closeClk may be nil for tabs that cannot close.
-func (a *App) layoutTab(gtx layout.Context, clk, closeClk *widget.Clickable, ic *widget.Icon, title string, dot color.NRGBA, active bool, w, h int) layout.Dimensions {
+func (a *App) layoutTab(gtx layout.Context, clk, closeClk *widget.Clickable, ic *widget.Icon, title string, secret bool, dot color.NRGBA, active bool, w, h int) layout.Dimensions {
 	th := a.th
 	size := image.Pt(w, h)
 	// Tabs are pills that stop short of the bar's bottom edge: a tab that
@@ -672,6 +683,9 @@ func (a *App) layoutTab(gtx layout.Context, clk, closeClk *widget.Clickable, ic 
 					wt := font.Normal
 					if active {
 						wt = font.Medium
+					}
+					if secret {
+						return th.secretTxtW(gtx, title, 13, fg, wt)
 					}
 					return th.txtW(gtx, title, 13, fg, wt)
 				}),
@@ -745,7 +759,12 @@ func (a *App) layoutTooltip(gtx layout.Context) {
 					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions { return drawIcon(gtx, r.icon, 15, th.Text2) }),
 						hspace(8),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions { return th.txt(gtx, r.text, 12, th.Text) }),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							if r.secret {
+								return th.secretTxt(gtx, r.text, 12, th.Text)
+							}
+							return th.txt(gtx, r.text, 12, th.Text)
+						}),
 					)
 				}))
 			}

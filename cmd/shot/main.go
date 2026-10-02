@@ -183,12 +183,15 @@ func (d *driver) move(x, y float32) {
 	d.frame()
 }
 
-func (d *driver) click(x, y float32, btn pointer.Buttons) {
+func (d *driver) click(x, y float32, btn pointer.Buttons) { d.clickMods(x, y, btn, 0) }
+
+// clickMods clicks with modifier keys held, as Ctrl+click and Shift+click.
+func (d *driver) clickMods(x, y float32, btn pointer.Buttons, mods key.Modifiers) {
 	p := f32.Pt(x, y)
 	d.move(x, y)
-	d.router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: btn, Position: p})
+	d.router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: btn, Position: p, Modifiers: mods})
 	d.frame()
-	d.router.Queue(pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: p})
+	d.router.Queue(pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: p, Modifiers: mods})
 	d.frame()
 	d.frame()
 }
@@ -307,6 +310,41 @@ func main() {
 		d.shot("home")
 	}
 	d.windowButtonsShot(want)
+	if want("home-drag") {
+		// Drag 树莓派 (未分组) onto the left half of 测试机 (开发): it must
+		// land in front of it, in that group.
+		order := func() string {
+			var s []string
+			for _, p := range st.Profiles() {
+				s = append(s, p.Group+"/"+p.Title())
+			}
+			return strings.Join(s, " ")
+		}
+		from, to := f32.Pt(d.px(300), d.px(540)), f32.Pt(d.px(200), d.px(407))
+		d.move(from.X, from.Y)
+		d.router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: from})
+		d.frame()
+		for i := 1; i <= 8; i++ {
+			p := from.Add(to.Sub(from).Mul(float32(i) / 8))
+			d.router.Queue(pointer.Event{Kind: pointer.Move, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: p})
+			d.frame()
+		}
+		d.shot("home-drag")
+		d.router.Queue(pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: to})
+		d.frame()
+		d.frame()
+		if got := order(); !strings.Contains(got, "开发/树莓派 开发/测试机") {
+			fail("drag did not move 树莓派 in front of 测试机: %s", got)
+		}
+		// Dropping a card back on itself neither moves nor connects it.
+		before := order()
+		d.drag(d.px(600), d.px(270), d.px(640), d.px(280))
+		if a.TabCount() != 0 || order() != before {
+			fail("drop on itself: tabs %d, order %s", a.TabCount(), order())
+		}
+		d.shot("home-dragged")
+		fmt.Printf("%-14s %s\n", "home-drag", order())
+	}
 	if want("home-search") {
 		d.typeText("root@172.16.8.4:2200")
 		d.shot("home-search")
@@ -316,9 +354,31 @@ func main() {
 		d.key("N", key.ModCtrl|key.ModShift)
 		d.run(100 * time.Millisecond)
 		d.shot("profile")
+		if want("profile-proxy") {
+			// Pick HTTP from the proxy drop-down: the address field shows.
+			d.click(d.px(517), d.px(566), pointer.ButtonPrimary)
+			d.click(d.px(570), d.px(616), pointer.ButtonPrimary)
+			d.run(100 * time.Millisecond)
+			d.shot("profile-proxy")
+		}
+		if want("profile-key") {
+			// Key authentication, then switch to a key entered by hand.
+			d.click(d.px(480), d.px(366), pointer.ButtonPrimary)
+			d.shot("profile-key")
+			d.click(d.px(480), d.px(371), pointer.ButtonPrimary)
+			d.typeText("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n")
+			d.shot("profile-key-manual")
+		}
 		d.key(key.NameEscape, 0)
 	}
 	d.pickerShot(want)
+	if want("privacy-home") {
+		a.SetPrivacy(true)
+		d.run(400 * time.Millisecond)
+		d.shot("privacy-home")
+		a.SetPrivacy(false)
+		d.run(400 * time.Millisecond)
+	}
 
 	// Connect to the demo host by typing its name and pressing Enter.
 	d.typeText("nlr-demo\n")
@@ -341,6 +401,13 @@ func main() {
 	if want("session") {
 		d.shot("session")
 	}
+	if want("privacy") {
+		a.SetPrivacy(true)
+		d.run(400 * time.Millisecond)
+		d.shot("privacy")
+		a.SetPrivacy(false)
+		d.run(400 * time.Millisecond)
+	}
 	if want("term-menu") {
 		d.click(d.px(700), d.px(300), pointer.ButtonSecondary)
 		d.shot("term-menu")
@@ -351,6 +418,42 @@ func main() {
 		d.click(d.px(500), float32(size.Y)-d.px(150), pointer.ButtonSecondary)
 		d.shot("file-menu")
 		d.key(key.NameEscape, 0)
+	}
+	if want("file-select") {
+		// Rows of projects/api: src, go.mod, main.go, README.md.
+		rowY := func(i int) float32 { return float32(size.Y) - d.px(800-627) + d.px(26)*float32(i) }
+		expect := func(what string, want ...string) {
+			if got := a.FileSelection(); strings.Join(got, ",") != strings.Join(want, ",") {
+				fail("%s selected %v, want %v", what, got, want)
+			}
+		}
+		d.click(d.px(500), rowY(2), pointer.ButtonSecondary)
+		expect("right-click on main.go", "main.go")
+		d.key(key.NameEscape, 0)
+		d.click(d.px(500), rowY(1), pointer.ButtonPrimary)
+		expect("click on go.mod", "go.mod")
+		d.clickMods(d.px(500), rowY(3), pointer.ButtonPrimary, key.ModCtrl)
+		expect("ctrl+click on README.md", "go.mod", "README.md")
+		d.clickMods(d.px(500), rowY(2), pointer.ButtonPrimary, key.ModShift)
+		expect("shift+click on main.go", "main.go", "README.md")
+		d.click(d.px(500), rowY(1), pointer.ButtonSecondary)
+		expect("right-click on go.mod", "go.mod")
+		d.key(key.NameEscape, 0)
+		d.click(d.px(500), rowY(0), pointer.ButtonPrimary)
+		fmt.Printf("%-14s %s\n", "file-select", time.Since(d.start).Round(time.Millisecond))
+	}
+	if want("tiny") {
+		// Restoring a window can report a zero or tiny size for a frame;
+		// laying out at such sizes must not crash.
+		full := d.size
+		for _, sz := range []image.Point{{}, {1, 1}, {40, 30}, {300, 0}, {0, 300}, {200, 120}} {
+			d.size = sz
+			d.frame()
+			d.frame()
+		}
+		d.size = full
+		d.run(100 * time.Millisecond)
+		fmt.Printf("%-14s %s\n", "tiny", time.Since(d.start).Round(time.Millisecond))
 	}
 	if want("tunnels") {
 		a.OpenTunnels()
@@ -514,10 +617,10 @@ func main() {
 		}
 		a.OpenSettings()
 		d.run(100 * time.Millisecond)
-		// The settings dialog is centered and 650dp tall; the check box is
-		// its last row, 571dp below the top edge.
-		top := (float32(d.size.Y) - d.px(650)) / 2
-		d.click(d.px(500), top+d.px(571), pointer.ButtonPrimary)
+		// The settings dialog is centered and 676dp tall; the check box is
+		// its second to last row, 565dp below the top edge.
+		top := (float32(d.size.Y) - d.px(676)) / 2
+		d.click(d.px(500), top+d.px(565), pointer.ButtonPrimary)
 		d.key(key.NameReturn, 0) // 保存
 		d.run(100 * time.Millisecond)
 		if !st.Settings().CloseOnExit {

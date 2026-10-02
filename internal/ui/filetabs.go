@@ -39,8 +39,8 @@ func sessionTip(sess *sshx.Session) []tipRow {
 		port = 22
 	}
 	return []tipRow{
-		{icServer, net.JoinHostPort(p.Host, strconv.Itoa(port))},
-		{icUser, p.User},
+		{icServer, net.JoinHostPort(p.Host, strconv.Itoa(port)), true},
+		{icUser, p.User, false},
 	}
 }
 
@@ -84,7 +84,7 @@ func (f *fileBase) closed()                     {}
 
 // tipCard describes where the file comes from: host, user and path.
 func (f *fileBase) tipCard() []tipRow {
-	return append(sessionTip(f.sess), tipRow{icFile, f.path})
+	return append(sessionTip(f.sess), tipRow{icFile, f.path, false})
 }
 
 func (f *fileBase) openExternal() { f.a.ext.fetch(f.a, f.sess, f.path, false) }
@@ -103,7 +103,11 @@ func (f *fileBase) statusBar(gtx layout.Context, info string, actions ...layout.
 	gtx.Constraints = layout.Exact(image.Pt(w, h))
 	children := []layout.FlexChild{
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-			return Label{Text: f.origin(), Size: 12, Color: th.Text3, Mono: true}.Layout(gtx, th)
+			l := Label{Text: f.origin(), Size: 12, Color: th.Text3, Mono: true}
+			return th.secretIn(gtx, l.Text, []string{f.sess.Profile.Addr()}, func(gtx layout.Context, s string, c color.NRGBA) layout.Dimensions {
+				l.Text, l.Color = s, c
+				return l.Layout(gtx, th)
+			}, l.Color)
 		}),
 		hspace(12),
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions { return th.txt(gtx, info, 12, th.Text2) }),

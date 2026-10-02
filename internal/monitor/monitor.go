@@ -37,7 +37,7 @@ echo "@net"; cat /proc/net/dev 2>/dev/null
 echo "@df"; df -kP 2>/dev/null
 echo "@proc"; cat /proc/[0-9]*/stat 2>/dev/null | awk '{s=$0;e=0;while((i=index(s,")"))>0){e+=i;s=substr(s,i+1)};o=index($0,"(");if(o==0||e==0)next;n=split(substr($0,e+2),a," ");print substr($0,1,o-2),a[2],a[5],a[6],a[12],a[13],a[22],substr($0,o+1,e-o-1)}' 2>/dev/null
 echo "@env"; [ "$ID" != - ] && grep -lzx "LC_NLRSHELL=$ID" /proc/[0-9]*/environ 2>/dev/null
-echo "@cwd"; for p in $P; do readlink "/proc/$p/cwd" 2>/dev/null && break; done
+echo "@cwd"; for p in $P; do (cd "/proc/$p/cwd" 2>/dev/null && pwd -P) && break; done
 echo "@@NLR end"
 done
 `

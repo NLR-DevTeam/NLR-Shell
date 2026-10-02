@@ -238,10 +238,11 @@
  		C.wl_pointer_release(s.pointer)
  		s.pointer = nil
  	}
-@@ -563,6 +704,34 @@
- 		w.size = image.Pt(int(width), int(height))
- 		w.updateOpaqueRegion()
- 	}
+@@ -559,12 +700,51 @@
+ //export gio_onToplevelConfigure
+ func gio_onToplevelConfigure(data unsafe.Pointer, topLvl *C.struct_xdg_toplevel, width, height C.int32_t, states *C.struct_wl_array) {
+ 	w := callbackLoad(data).(*window)
+-	if width != 0 && height != 0 {
 +	// The compositor decides the window state: it maximizes, restores or
 +	// fullscreens windows on its own, for example while a maximized window
 +	// is dragged. Report it, or the application keeps asking for the mode
@@ -258,22 +259,39 @@
 +			}
 +		}
 +	}
++	// Remember the windowed size when the compositor leaves the windowed
++	// state on its own, as Configure does when the application asks.
++	if w.config.Mode == Windowed && mode != Windowed && w.size.X > 0 && w.size.Y > 0 {
++		w.wsize = w.size.Mul(w.scale)
++	}
++	switch {
++	case width != 0 && height != 0:
+ 		w.size = image.Pt(int(width), int(height))
+ 		w.updateOpaqueRegion()
++	case mode == Windowed && (w.config.Mode == Maximized || w.config.Mode == Fullscreen) && w.wsize.X > 0 && w.wsize.Y > 0:
++		// A zero size leaves the size to the client: going back to the
++		// windowed state, that is the size from before.
++		w.size = w.wsize.Div(w.scale)
++		w.updateOpaqueRegion()
++	}
 +	if w.config.Mode != mode {
 +		w.config.Mode = mode
 +		w.ProcessEvent(ConfigEvent{Config: w.config})
-+	}
-+}
-+
+ 	}
+ }
+ 
 +// wlStates returns the uint32 elements of a Wayland array.
 +func wlStates(a *C.struct_wl_array) []C.uint32_t {
 +	if a == nil || a.data == nil || a.size == 0 {
 +		return nil
 +	}
 +	return unsafe.Slice((*C.uint32_t)(a.data), int(a.size)/int(unsafe.Sizeof(C.uint32_t(0))))
- }
- 
++}
++
  //export gio_onToplevelDecorationConfigure
-@@ -694,9 +863,10 @@
+ func gio_onToplevelDecorationConfigure(data unsafe.Pointer, deco *C.struct_zxdg_toplevel_decoration_v1, mode C.uint32_t) {
+ 	w := callbackLoad(data).(*window)
+@@ -694,9 +874,10 @@
  		d.wm = (*C.struct_xdg_wm_base)(C.wl_registry_bind(reg, name, &C.xdg_wm_base_interface, 1))
  	case "zxdg_decoration_manager_v1":
  		d.decor = (*C.struct_zxdg_decoration_manager_v1)(C.wl_registry_bind(reg, name, &C.zxdg_decoration_manager_v1_interface, 1))
@@ -287,7 +305,7 @@
  	case "wl_data_device_manager":
  		d.dataDeviceManager = (*C.struct_wl_data_device_manager)(C.wl_registry_bind(reg, name, &C.wl_data_device_manager_interface, 3))
  		d.bindDataDevice()
-@@ -1059,6 +1229,18 @@
+@@ -1059,6 +1240,18 @@
  	cnf := w.config
  	cnf.apply(cfg, options)
  	w.config.decoHeight = cnf.decoHeight
@@ -306,7 +324,67 @@
  
  	switch cnf.Mode {
  	case Fullscreen:
-@@ -1169,6 +1351,7 @@
+@@ -1066,7 +1259,7 @@
+ 		case Minimized, Fullscreen:
+ 		default:
+ 			w.config.Mode = Fullscreen
+-			w.wsize = w.config.Size
++			w.wsize = windowedSize(w.config.Size, cnf.Size)
+ 			C.xdg_toplevel_set_fullscreen(w.topLvl, nil)
+ 		}
+ 	case Minimized:
+@@ -1081,7 +1274,7 @@
+ 		case Minimized, Fullscreen:
+ 		default:
+ 			w.config.Mode = Maximized
+-			w.wsize = w.config.Size
++			w.wsize = windowedSize(w.config.Size, cnf.Size)
+ 			C.xdg_toplevel_set_maximized(w.topLvl)
+ 			w.setTitle(prev, cnf)
+ 		}
+@@ -1089,13 +1282,13 @@
+ 		switch prev.Mode {
+ 		case Fullscreen:
+ 			w.config.Mode = Windowed
+-			w.size = w.wsize.Div(w.scale)
++			w.restoreWindowed()
+ 			C.xdg_toplevel_unset_fullscreen(w.topLvl)
+ 		case Minimized:
+ 			w.config.Mode = Windowed
+ 		case Maximized:
+ 			w.config.Mode = Windowed
+-			w.size = w.wsize.Div(w.scale)
++			w.restoreWindowed()
+ 			C.xdg_toplevel_unset_maximized(w.topLvl)
+ 		}
+ 		w.setTitle(prev, cnf)
+@@ -1111,6 +1304,25 @@
+ 	w.ProcessEvent(ConfigEvent{Config: w.config})
+ }
+ 
++// windowedSize returns the size to restore when the window leaves the
++// maximized or fullscreen state: its current size, or the requested one
++// while it has none, as when it is created maximized.
++func windowedSize(cur, requested image.Point) image.Point {
++	if cur.X > 0 && cur.Y > 0 {
++		return cur
++	}
++	return requested
++}
++
++// restoreWindowed goes back to the size saved before the window was
++// maximized or made fullscreen. Without a saved size it keeps the current
++// one: a zero size would leave the window without a surface to draw on.
++func (w *window) restoreWindowed() {
++	if w.wsize.X > 0 && w.wsize.Y > 0 {
++		w.size = w.wsize.Div(w.scale)
++	}
++}
++
+ func (w *window) setWindowConstraints() {
+ 	decoHeight := w.decoHeight()
+ 	if scaled := w.config.MinSize.Div(w.scale); scaled != (image.Point{}) {
+@@ -1169,6 +1381,7 @@
  }
  
  func (w *window) SetCursor(cursor pointer.Cursor) {
@@ -314,7 +392,7 @@
  	w.cursor.cursor = w.loadCursor(cursor)
  	w.updateCursor()
  }
-@@ -1183,6 +1366,16 @@
+@@ -1183,6 +1396,16 @@
  }
  
  func (w *window) setCursor(pointer *C.struct_wl_pointer, serial C.uint32_t) {
@@ -331,7 +409,7 @@
  	c := w.cursor.system
  	if c == nil {
  		c = w.cursor.cursor
-@@ -1203,6 +1396,88 @@
+@@ -1203,6 +1426,88 @@
  	C.wl_surface_commit(w.cursor.surf)
  }
  
@@ -420,7 +498,7 @@
  func (w *window) resetFling() {
  	w.fling.start = false
  	w.fling.anim = fling.Animation{}
-@@ -1563,28 +1838,187 @@
+@@ -1563,28 +1868,187 @@
  
  //export gio_onTextInputEnter
  func gio_onTextInputEnter(data unsafe.Pointer, im *C.struct_zwp_text_input_v3, surf *C.struct_wl_surface) {
@@ -608,7 +686,7 @@
  }
  
  //export gio_onDataSourceTarget
-@@ -1676,9 +2110,10 @@
+@@ -1676,9 +2140,10 @@
  		Time:      time.Duration(t) * time.Millisecond,
  		Modifiers: w.disp.xkb.Modifiers(),
  	})
@@ -620,7 +698,18 @@
  		w.updateCursor()
  	}
  }
-@@ -1802,11 +2237,55 @@
+@@ -1765,7 +2230,9 @@
+ 	}
+ 	w.flushScroll()
+ 	size, cfg := w.getConfig()
+-	if cfg == (unit.Metric{}) {
++	// A window without a size yet, or restored to none, has nothing to
++	// draw on; Gio panics on a zero-sized frame.
++	if cfg == (unit.Metric{}) || size.X <= 0 || size.Y <= 0 {
+ 		return
+ 	}
+ 	if size != w.config.Size {
+@@ -1802,11 +2269,55 @@
  	return w.surf, sz.X, sz.Y
  }
  
@@ -679,7 +768,7 @@
  
  func (w *window) NewContext() (context, error) {
  	var firstErr error
-@@ -1911,6 +2390,9 @@
+@@ -1911,6 +2422,9 @@
  	if d.decor != nil {
  		C.zxdg_decoration_manager_v1_destroy(d.decor)
  	}

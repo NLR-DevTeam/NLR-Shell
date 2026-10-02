@@ -6,6 +6,7 @@ package sshtest
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -29,10 +31,12 @@ type Server struct {
 	Password string
 	// Interactive, if set, makes the server demand keyboard-interactive
 	// authentication with these questions instead of a plain password.
-	ln       net.Listener
-	cfg      *ssh.ServerConfig
-	handlers sftp.Handlers
-	start    time.Time
+	ln  net.Listener
+	cfg *ssh.ServerConfig
+	// authorized is the public key accepted for User, if any.
+	authorized atomic.Pointer[ssh.PublicKey]
+	handlers   sftp.Handlers
+	start      time.Time
 
 	mu      sync.Mutex
 	cwd     map[*ssh.ServerConn]string
@@ -58,6 +62,12 @@ func Start(addr, user, password string) (*Server, error) {
 			}
 			return nil, fmt.Errorf("bad credentials")
 		},
+		PublicKeyCallback: func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if k := s.authorized.Load(); k != nil && c.User() == s.User && bytes.Equal((*k).Marshal(), key.Marshal()) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unknown key")
+		},
 	}
 	s.cfg.AddHostKey(signer)
 	s.ln, err = net.Listen("tcp", addr)
@@ -68,6 +78,9 @@ func Start(addr, user, password string) (*Server, error) {
 	go s.accept()
 	return s, nil
 }
+
+// Authorize makes the server accept key for its user.
+func (s *Server) Authorize(key ssh.PublicKey) { s.authorized.Store(&key) }
 
 // Close stops the server.
 func (s *Server) Close() { s.ln.Close() }

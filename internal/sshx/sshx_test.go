@@ -2,6 +2,9 @@ package sshx_test
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"nlrshell/internal/sshx"
 	"nlrshell/internal/sshx/sshtest"
@@ -411,5 +416,38 @@ func TestForwards(t *testing.T) {
 	// Starting on a busy port reports a friendly error.
 	if err := s.Forwards.Start(store.Forward{ID: "x", Kind: store.ForwardLocal, ListenPort: webPort, TargetHost: "127.0.0.1", TargetPort: 1}); err == nil {
 		t.Fatal("expected listen error")
+	}
+}
+
+func TestManualKey(t *testing.T) {
+	srv, st, p := setup(t)
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(priv)
+	srv.Authorize(signer.PublicKey())
+
+	plain, _ := ssh.MarshalPrivateKey(priv, "")
+	locked, _ := ssh.MarshalPrivateKeyWithPassphrase(priv, "", []byte("口令"))
+	for name, q := range map[string]store.Profile{
+		"plain":      {KeyData: store.Encrypt(string(pem.EncodeToMemory(plain)))},
+		"passphrase": {KeyData: store.Encrypt(string(pem.EncodeToMemory(locked))), Passphrase: store.Encrypt("口令")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			k := p
+			k.Auth, k.KeyPath, k.KeyData, k.Passphrase = store.AuthKey, "", q.KeyData, q.Passphrase
+			// No password to fall back on: only the key can log in.
+			pr := &prompter{trust: true}
+			s := connect(t, st, k, pr)
+			if s.State() != sshx.StateConnected || pr.passwords != 0 {
+				_, _, err := s.Info()
+				t.Fatalf("key login failed: %v (password prompts %d)", err, pr.passwords)
+			}
+		})
+	}
+
+	if err := sshx.CheckPrivateKey([]byte("PuTTY-User-Key-File-3: ssh-ed25519\n")); err == nil || !strings.Contains(err.Error(), "PuTTY") {
+		t.Fatalf("ppk: %v", err)
+	}
+	if err := sshx.CheckPrivateKey([]byte("not a key")); err == nil {
+		t.Fatal("garbage accepted as a key")
 	}
 }

@@ -127,6 +127,11 @@ func (m *monitorView) section(gtx layout.Context, title, value string, valueColo
 }
 
 func (m *monitorView) kv(gtx layout.Context, k, v string) layout.Dimensions {
+	return m.kvs(gtx, k, v, false)
+}
+
+// kvs is kv with a value that privacy mode hides when secret is set.
+func (m *monitorView) kvs(gtx layout.Context, k, v string, secret bool) layout.Dimensions {
 	th := m.sv.a.th
 	return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -134,6 +139,9 @@ func (m *monitorView) kv(gtx layout.Context, k, v string) layout.Dimensions {
 			return th.txt(gtx, k, 12, th.Text3)
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+			if secret {
+				return th.secretTxt(gtx, v, 12, th.Text2)
+			}
 			return th.txt(gtx, v, 12, th.Text2)
 		}),
 	)
@@ -184,18 +192,21 @@ func (m *monitorView) Layout(gtx layout.Context) layout.Dimensions {
 						}),
 						hspace(8),
 						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							return th.txtW(gtx, host, 15, th.Text, font.SemiBold)
+							if p.Name != "" && d.Static.Host == "" {
+								return th.txtW(gtx, host, 15, th.Text, font.SemiBold)
+							}
+							return th.secretTxtW(gtx, host, 15, th.Text, font.SemiBold)
 						}),
 					)
 				}),
 				vspace(8),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions { return m.kv(gtx, "地址", p.Addr()) }),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions { return m.kvs(gtx, "地址", p.Addr(), true) }),
 			}
 			if d.Static.OS != "" {
-				rows = append(rows, vspace(3), layout.Rigid(func(gtx layout.Context) layout.Dimensions { return m.kv(gtx, "系统", d.Static.OS) }))
+				rows = append(rows, vspace(3), layout.Rigid(func(gtx layout.Context) layout.Dimensions { return m.kvs(gtx, "系统", d.Static.OS, true) }))
 			}
 			if d.Static.Kernel != "" {
-				rows = append(rows, vspace(3), layout.Rigid(func(gtx layout.Context) layout.Dimensions { return m.kv(gtx, "内核", d.Static.Kernel) }))
+				rows = append(rows, vspace(3), layout.Rigid(func(gtx layout.Context) layout.Dimensions { return m.kvs(gtx, "内核", d.Static.Kernel, true) }))
 			}
 			if d.Ready && !d.Unsupported {
 				rows = append(rows,

@@ -20,11 +20,13 @@ import (
 
 // Theme holds fonts and colors shared by all widgets.
 type Theme struct {
-	Shaper *text.Shaper
-	Mat    *material.Theme
-	Face   font.Typeface
-	Mono   font.Typeface
-	tip    *tooltip
+	// privacy is how far privacy mode has faded in, from 0 to 1.
+	privacy float32
+	Shaper  *text.Shaper
+	Mat     *material.Theme
+	Face    font.Typeface
+	Mono    font.Typeface
+	tip     *tooltip
 
 	Bg0      color.NRGBA // window and terminal background
 	Bg1      color.NRGBA // panels
@@ -92,7 +94,7 @@ func NewTheme(western, cjk string) *Theme {
 	m.TextSize = 13
 	th.Mat = m
 	th.SetFonts(western, cjk)
-	th.Apply(false, false, rgb(0x3ddc97))
+	th.Apply(false, false, rgb(0x00b935))
 	return th
 }
 

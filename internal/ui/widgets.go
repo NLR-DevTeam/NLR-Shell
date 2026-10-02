@@ -115,8 +115,9 @@ type tooltip struct {
 
 // tipRow is one line of a hover card: an icon and a value.
 type tipRow struct {
-	icon *widget.Icon
-	text string
+	icon   *widget.Icon
+	text   string
+	secret bool // hidden in privacy mode
 }
 
 // hover reports that the pointer is over the control identified by key.
@@ -173,15 +174,18 @@ type Field struct {
 	Mono   bool
 	// Height of the input box; zero means the standard 32dp.
 	Height unit.Dp
-	init   bool
-	menu   rightClick
+	// Multi makes a multi-line text area, top aligned, where Enter starts
+	// a new line.
+	Multi bool
+	init  bool
+	menu  rightClick
 }
 
 func (f *Field) setup() {
 	if !f.init {
 		f.init = true
-		f.Editor.SingleLine = true
-		f.Editor.Submit = true
+		f.Editor.SingleLine = !f.Multi
+		f.Editor.Submit = !f.Multi
 	}
 }
 
@@ -265,7 +269,14 @@ func fillEditor(gtx layout.Context, es editorStyle) layout.Dimensions {
 	rec := op.Record(gtx.Ops)
 	d := es.Layout(gtx)
 	call := rec.Stop()
-	st := op.Offset(image.Pt(0, max((h-d.Size.Y)/2, 0))).Push(gtx.Ops)
+	// Place the text by its baseline so that the glyphs themselves are
+	// centered: digits, capitals and CJK characters all have their middle
+	// about textMiddle em above the baseline. Centering the line box
+	// instead depends on the fonts' ascent and descent, which differ
+	// between the Latin and the CJK font and leave the glyphs off center.
+	px := float32(gtx.Metric.PxPerSp) * float32(es.size)
+	base := h/2 + int(textMiddle*px+0.5)
+	st := op.Offset(image.Pt(0, base-(d.Size.Y-d.Baseline))).Push(gtx.Ops)
 	call.Add(gtx.Ops)
 	st.Pop()
 	return layout.Dimensions{Size: image.Pt(d.Size.X, max(h, d.Size.Y))}
@@ -291,6 +302,14 @@ func (f *Field) box(gtx layout.Context, th *Theme, trailing layout.Widget) layou
 	f.hitArea(gtx, r)
 	cg := gtx
 	cg.Constraints = layout.Exact(r.Max)
+	if f.Multi {
+		layout.UniformInset(8).Layout(cg, func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min = gtx.Constraints.Max
+			return editorStyle{th: th, e: &f.Editor, hint: f.Hint, size: 12, mono: f.Mono}.Layout(gtx)
+		})
+		f.menuArea(gtx, th, r)
+		return layout.Dimensions{Size: r.Max}
+	}
 	layout.Inset{Left: 10, Right: 6}.Layout(cg, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
@@ -341,12 +360,22 @@ func (s editorStyle) Layout(gtx layout.Context) layout.Dimensions {
 	es.Color = s.th.Text
 	es.HintColor = s.th.Text3
 	es.SelectionColor = s.th.Select
-	es.Font.Typeface = s.th.Face
-	if s.mono {
-		es.Font.Typeface = s.th.Mono
-	}
+	es.Font = s.font()
 	return es.Layout(gtx)
 }
+
+func (s editorStyle) font() font.Font {
+	if s.mono {
+		return font.Font{Typeface: s.th.Mono}
+	}
+	return font.Font{Typeface: s.th.Face}
+}
+
+// textMiddle is the height of the visual middle of text above its
+// baseline, in em: half the cap height of Latin fonts (about 0.7 em) is
+// 0.35, and CJK glyphs, which reach a little below the baseline, center
+// near 0.38.
+const textMiddle = 0.365
 
 // checkbox draws a labeled check box bound to b.
 func (th *Theme) checkbox(gtx layout.Context, b *widget.Bool, label string) layout.Dimensions {

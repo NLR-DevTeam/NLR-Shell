@@ -121,3 +121,18 @@ func (a *App) TabTitles() []string {
 	}
 	return out
 }
+
+// FileSelection returns the names selected in the active tab's file panel,
+// in display order.
+func (a *App) FileSelection() []string {
+	var out []string
+	if sv := a.current(); sv != nil {
+		for _, e := range sv.files.selection() {
+			out = append(out, e.Name)
+		}
+	}
+	return out
+}
+
+// SetPrivacy switches privacy mode; it fades in over the next frames.
+func (a *App) SetPrivacy(on bool) { a.set.Privacy = on }

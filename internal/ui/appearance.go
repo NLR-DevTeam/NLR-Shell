@@ -23,7 +23,7 @@ func accentColor(name string) color.NRGBA {
 	case store.AccentOrange:
 		return rgb(0xffa500) // CSS orange
 	}
-	return rgb(0x3ddc97) // NLR 绿
+	return rgb(0x00b935) // NLR 绿
 }
 
 // systemIsDark caches the last answer of systemDark; 0 unknown, 1 dark,

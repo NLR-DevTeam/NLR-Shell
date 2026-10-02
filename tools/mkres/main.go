@@ -54,7 +54,7 @@ func render(size int) image.Image {
 	)
 	bgTop, bgBot := [3]float64{0x1b, 0x21, 0x29}, [3]float64{0x0b, 0x0d, 0x10}
 	fg := [3]float64{0xe6, 0xea, 0xf0}
-	accent := [3]float64{0x3d, 0xdc, 0x97}
+	accent := [3]float64{0x00, 0xb9, 0x35}
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
 			p := pt{(float64(x) + 0.5) * px, (float64(y) + 0.5) * px}

@@ -22,6 +22,13 @@ const (
 	AuthAgent    = "agent"
 )
 
+// Proxy kinds for Profile.ProxyType.
+const (
+	ProxyNone   = ""
+	ProxyHTTP   = "http"
+	ProxySOCKS5 = "socks5"
+)
+
 // Forward kinds.
 const (
 	ForwardLocal   = "local"
@@ -50,12 +57,20 @@ type Profile struct {
 	User  string `json:"user"`
 	Auth  string `json:"auth"`
 	// Password and Passphrase are encrypted with Encrypt, base64 encoded.
-	Password   string    `json:"password,omitempty"`
-	KeyPath    string    `json:"keyPath,omitempty"`
-	Passphrase string    `json:"passphrase,omitempty"`
-	JumpID     string    `json:"jumpId,omitempty"`
-	Forwards   []Forward `json:"forwards,omitempty"`
-	LastUsed   int64     `json:"lastUsed,omitempty"`
+	Password   string `json:"password,omitempty"`
+	KeyPath    string `json:"keyPath,omitempty"`
+	Passphrase string `json:"passphrase,omitempty"`
+	// KeyData is a private key entered by hand, encrypted like Password.
+	// When set it is used instead of KeyPath.
+	KeyData string `json:"keyData,omitempty"`
+	JumpID  string `json:"jumpId,omitempty"`
+	// ProxyType and ProxyAddr (host:port) name a proxy, such as a local
+	// one, that the connection goes through. A connection through a jump
+	// host does not use it.
+	ProxyType string    `json:"proxyType,omitempty"`
+	ProxyAddr string    `json:"proxyAddr,omitempty"`
+	Forwards  []Forward `json:"forwards,omitempty"`
+	LastUsed  int64     `json:"lastUsed,omitempty"`
 }
 
 // Title returns the display name of the profile.
@@ -120,9 +135,11 @@ type Settings struct {
 	CommandBar      bool   `json:"commandBar"`
 	// CloseOnExit closes the page of a session whose remote shell exited
 	// with status 0. The last page leaves the home page showing.
-	CloseOnExit bool   `json:"closeOnExit"`
-	Appearance  string `json:"appearance"`
-	Accent      string `json:"accent"`
+	CloseOnExit bool `json:"closeOnExit"`
+	// Privacy hides server addresses and system information in the UI.
+	Privacy    bool   `json:"privacy,omitempty"`
+	Appearance string `json:"appearance"`
+	Accent     string `json:"accent"`
 	// PickerDir is the local directory the file picker was last used in.
 	PickerDir string `json:"pickerDir,omitempty"`
 	// Background is the path of an optional background image.
@@ -181,9 +198,13 @@ func DefaultSettings() Settings {
 
 type fileData struct {
 	Profiles []Profile `json:"profiles"`
-	Snippets []Snippet `json:"snippets"`
-	History  []string  `json:"history,omitempty"`
-	Settings Settings  `json:"settings"`
+	// ManualOrder keeps Profiles in the order they were arranged in by
+	// dragging instead of showing the most recently used first. It lives
+	// outside Settings, which the UI writes back as a whole.
+	ManualOrder bool      `json:"manualOrder,omitempty"`
+	Snippets    []Snippet `json:"snippets"`
+	History     []string  `json:"history,omitempty"`
+	Settings    Settings  `json:"settings"`
 }
 
 // Store holds the persisted state.
@@ -314,6 +335,9 @@ func (s *Store) Profiles() []Profile {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := append([]Profile(nil), s.data.Profiles...)
+	if s.data.ManualOrder {
+		return out
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].LastUsed != out[j].LastUsed {
 			return out[i].LastUsed > out[j].LastUsed
@@ -321,6 +345,68 @@ func (s *Store) Profiles() []Profile {
 		return strings.ToLower(out[i].Title()) < strings.ToLower(out[j].Title())
 	})
 	return out
+}
+
+// ManualOrder reports whether the connections keep the order they were
+// arranged in.
+func (s *Store) ManualOrder() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.data.ManualOrder
+}
+
+// SetManualOrder switches between the arranged order and the most recently
+// used first. Switching to the arranged order starts from the order shown.
+func (s *Store) SetManualOrder(on bool) {
+	if on == s.ManualOrder() {
+		return
+	}
+	order := s.Profiles()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.Profiles, s.data.ManualOrder = order, on
+	s.saveLocked()
+}
+
+// MoveProfile puts the profile id into group, in front of the profile
+// before, or at the end with before empty, and keeps the connections in
+// that manual order from then on. Starting the manual order keeps the order
+// shown until now.
+func (s *Store) MoveProfile(id, group, before string) {
+	s.SetManualOrder(true)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var moved *Profile
+	rest := make([]Profile, 0, len(s.data.Profiles))
+	for _, p := range s.data.Profiles {
+		if p.ID == id {
+			p := p
+			moved = &p
+		} else {
+			rest = append(rest, p)
+		}
+	}
+	if moved == nil {
+		return
+	}
+	moved.Group = group
+	at := len(rest)
+	for i, p := range rest {
+		if p.ID == before {
+			at = i
+		}
+	}
+	if before == "" {
+		// The end of the group: after its last member, so that it shows
+		// last there.
+		for i, p := range rest {
+			if p.Group == group {
+				at = i + 1
+			}
+		}
+	}
+	s.data.Profiles = append(rest[:at:at], append([]Profile{*moved}, rest[at:]...)...)
+	s.saveLocked()
 }
 
 // Profile returns the profile with the given id.

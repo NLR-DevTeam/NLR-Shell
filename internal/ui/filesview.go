@@ -39,7 +39,7 @@ const (
 // fileDrag follows a press in the file list that may become a drag of the
 // selection onto a folder.
 type fileDrag struct {
-	pressed  bool
+	pressed  bool // set by a left press on a row; the other fields need it
 	active   bool
 	start    f32.Point
 	pos      image.Point // pointer, in list coordinates
@@ -920,7 +920,7 @@ func (fv *filesView) fileList(gtx layout.Context) layout.Dimensions {
 			switch {
 			case d.active && pe.Kind == pointer.Release && d.target >= 0:
 				fv.moveInto(fv.selection(), *fv.entry(d.target))
-			case !d.active && d.collapse >= 0 && pe.Kind == pointer.Release:
+			case d.pressed && !d.active && d.collapse >= 0 && pe.Kind == pointer.Release:
 				// A plain click on one row of a multiple selection selects
 				// just that row, once it is clear no drag is starting.
 				fv.selectOnly(d.collapse)

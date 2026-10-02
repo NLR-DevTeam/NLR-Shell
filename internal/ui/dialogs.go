@@ -26,10 +26,17 @@ type profileDialog struct {
 
 	name, group, host, port, user Field
 	password, keyPath, passphrase Field
+	proxyAddr, keyData            Field
 	auth                          Segmented
-	jumpClk, browseClk            widget.Clickable
-	errMsg                        string
-	focused                       bool
+	jumpClk, browseClk, proxyClk  widget.Clickable
+	// keyManual shows keyData, a key pasted by hand, instead of keyPath.
+	keyManual  bool
+	keyModeClk widget.Clickable
+	// keyFocused is set while keyData has the focus, so that Enter starts
+	// a new line there instead of saving.
+	keyFocused bool
+	errMsg     string
+	focused    bool
 
 	closeClk, cancelClk, saveClk, connectClk widget.Clickable
 }
@@ -42,8 +49,14 @@ func newProfileDialog(a *App, p store.Profile, connectAfter bool) *profileDialog
 	d.port.Label = "端口"
 	d.user.Label = "用户名"
 	d.password.Label = "密码"
-	d.keyPath.Label = "私钥文件"
+	d.keyData.Multi, d.keyData.Mono, d.keyData.Height = true, true, 110
+	d.keyData.Hint = "-----BEGIN OPENSSH PRIVATE KEY-----"
+	if p.KeyData != "" {
+		d.keyManual, d.keyData.Hint = true, "已保存"
+	}
 	d.passphrase.Label, d.passphrase.Hint = "私钥口令", "可选"
+	d.proxyAddr.Label, d.proxyAddr.Hint = "代理地址", "127.0.0.1:7890"
+	d.proxyAddr.SetText(p.ProxyAddr)
 	d.password.Editor.Mask, d.passphrase.Editor.Mask = '•', '•'
 	d.port.Editor.Filter = "0123456789"
 	d.name.SetText(p.Name)
@@ -89,9 +102,37 @@ func (d *profileDialog) build() (store.Profile, bool) {
 	case p.User == "":
 		d.errMsg = "请填写用户名"
 		return p, false
-	case p.Auth == store.AuthKey && p.KeyPath == "":
+	case p.Auth == store.AuthKey && !d.keyManual && p.KeyPath == "":
 		d.errMsg = "请选择私钥"
 		return p, false
+	}
+	switch kd := strings.TrimSpace(d.keyData.Text()); {
+	case p.Auth != store.AuthKey:
+	case !d.keyManual:
+		p.KeyData = ""
+	case kd != "":
+		kd += "\n"
+		if err := sshx.CheckPrivateKey([]byte(kd)); err != nil {
+			d.errMsg = err.Error()
+			return p, false
+		}
+		p.KeyData = store.Encrypt(kd)
+	case p.KeyData == "":
+		d.errMsg = "请粘贴私钥"
+		return p, false
+	}
+	p.ProxyAddr = strings.TrimSpace(d.proxyAddr.Text())
+	if p.ProxyType != store.ProxyNone {
+		addr, err := sshx.ParseProxyAddr(p.ProxyAddr)
+		switch {
+		case p.JumpID != "":
+			d.errMsg = "跳板机和代理只能选一个"
+			return p, false
+		case err != nil:
+			d.errMsg = err.Error()
+			return p, false
+		}
+		p.ProxyAddr = addr
 	}
 	p.Port = port
 	if pw := d.password.Text(); pw != "" {
@@ -116,8 +157,9 @@ func (d *profileDialog) save(connect bool) {
 	}
 }
 
-func (d *profileDialog) Submit(a *App) { d.save(d.connectAfter) }
-func (d *profileDialog) Cancel(a *App) { a.Close(d) }
+func (d *profileDialog) Submit(a *App)   { d.save(d.connectAfter) }
+func (d *profileDialog) Cancel(a *App)   { a.Close(d) }
+func (d *profileDialog) Multiline() bool { return d.keyFocused }
 
 func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	th := a.th
@@ -129,7 +171,7 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			d.name.Focus(gtx)
 		}
 	}
-	for _, f := range []*Field{&d.name, &d.group, &d.host, &d.port, &d.user, &d.password, &d.keyPath, &d.passphrase} {
+	for _, f := range []*Field{&d.name, &d.group, &d.host, &d.port, &d.user, &d.password, &d.keyPath, &d.passphrase, &d.proxyAddr, &d.keyData} {
 		if _, changed := f.Events(gtx); changed {
 			d.errMsg = ""
 		}
@@ -158,6 +200,28 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 				continue
 			}
 			items = append(items, MenuItem{Label: jp.Title() + "  (" + jp.Addr() + ")", Checked: d.p.JumpID == jp.ID, Do: func() { d.p.JumpID = jp.ID }})
+		}
+		a.Menu(items...)
+	}
+	d.keyFocused = d.keyManual && d.auth.Value == store.AuthKey && gtx.Focused(&d.keyData.Editor)
+	if d.keyModeClk.Clicked(gtx) {
+		d.keyManual, d.errMsg = !d.keyManual, ""
+		if d.keyManual {
+			d.keyData.Focus(gtx)
+		} else {
+			d.keyPath.Focus(gtx)
+		}
+	}
+	if d.proxyClk.Clicked(gtx) {
+		var items []MenuItem
+		for _, k := range proxyKinds {
+			k := k
+			items = append(items, MenuItem{Label: k[1], Checked: d.p.ProxyType == k[0], Do: func() {
+				d.p.ProxyType, d.errMsg = k[0], ""
+				if k[0] != store.ProxyNone && d.proxyAddr.Text() == "" {
+					d.proxyAddr.SetText("127.0.0.1:7890")
+				}
+			}})
 		}
 		a.Menu(items...)
 	}
@@ -194,12 +258,21 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			case store.AuthPassword:
 				rows = append(rows, row(12, fld(1, &d.password)))
 			case store.AuthKey:
-				rows = append(rows,
-					row(12, fld(1, &d.keyPath), hspace(8), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				label, link := "私钥文件", "手动输入"
+				if d.keyManual {
+					label, link = "私钥", "选择文件"
+				}
+				rows = append(rows, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					return labelLink(gtx, th, label, &d.keyModeClk, link)
+				}))
+				if d.keyManual {
+					rows = append(rows, row(12, fld(1, &d.keyData)))
+				} else {
+					rows = append(rows, row(12, fld(1, &d.keyPath), hspace(8), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return th.button(gtx, &d.browseClk, "浏览…", nil, btnDefault)
-					})),
-					row(12, fld(1, &d.passphrase)),
-				)
+					})))
+				}
+				rows = append(rows, row(12, fld(1, &d.passphrase)))
 			}
 			rows = append(rows,
 				row(4, fld(1, &d.group), hspace(10), layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
@@ -208,6 +281,21 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 						jump = jp.Title()
 					}
 					return selectBox(gtx, th, &d.jumpClk, "跳板机", jump)
+				})),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: 8}.Layout(gtx) }),
+				row(4, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					kind := proxyKinds[0][1]
+					for _, k := range proxyKinds {
+						if k[0] == d.p.ProxyType {
+							kind = k[1]
+						}
+					}
+					return selectBox(gtx, th, &d.proxyClk, "代理", kind)
+				}), hspace(10), layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					if d.p.ProxyType == store.ProxyNone {
+						return layout.Dimensions{Size: image.Pt(gtx.Constraints.Max.X, 0)}
+					}
+					return d.proxyAddr.Layout(gtx, th)
 				})),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					if d.errMsg == "" {
@@ -233,6 +321,37 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 				},
 			)
 		})
+}
+
+// labelLink draws a field label followed by a link that switches how the
+// field is entered.
+func labelLink(gtx layout.Context, th *Theme, label string, clk *widget.Clickable, link string) layout.Dimensions {
+	return layout.Inset{Bottom: 5}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return th.txt(gtx, label, 12, th.Text2) }),
+			hspace(8),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return clk.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					c := th.Accent
+					if clk.Hovered() {
+						c = alpha(c, 0xcc)
+					}
+					return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions { return th.txt(gtx, link, 12, c) }),
+						hspace(2),
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions { return drawIcon(gtx, icTunnel, 14, c) }),
+					)
+				})
+			}),
+		)
+	})
+}
+
+// proxyKinds are the proxy choices of the profile editor.
+var proxyKinds = [][2]string{
+	{store.ProxyNone, "无"},
+	{store.ProxyHTTP, "HTTP"},
+	{store.ProxySOCKS5, "SOCKS5"},
 }
 
 // selectBox draws a labeled drop-down style button showing value.
@@ -635,7 +754,7 @@ type settingsDialog struct {
 	fontSize, scrollback, interval, downloadDir Field
 	fontFamily, cjkFont                         fontCombo
 	copySel, commandBar, follow, hidden         widget.Bool
-	closeOnExit                                 widget.Bool
+	closeOnExit, recentOrder                    widget.Bool
 	browseClk                                   widget.Clickable
 	closeClk, cancelClk, saveClk                widget.Clickable
 	errMsg                                      string
@@ -708,6 +827,7 @@ func newSettingsDialog(a *App) *settingsDialog {
 	d.downloadDir.SetText(s.DownloadDir)
 	d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value = s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden
 	d.closeOnExit.Value = s.CloseOnExit
+	d.recentOrder.Value = !a.st.ManualOrder()
 	d.appearance, d.accent, d.rightClick, d.background = s.Appearance, s.Accent, s.RightClick, s.Background
 	return d
 }
@@ -747,6 +867,8 @@ func (d *settingsDialog) Submit(a *App) {
 		s.Appearance, s.Accent, s.RightClick, s.Background = d.appearance, d.accent, d.rightClick, d.background
 	})
 	a.applyTheme()
+	a.st.SetManualOrder(!d.recentOrder.Value)
+	a.home.refresh()
 	a.loadBackground()
 	a.th.SetFonts(family, cjk)
 	for _, t := range a.sessionViews() {
@@ -837,6 +959,7 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		chk(&d.follow, "文件跟随终端目录"),
 		chk(&d.hidden, "显示隐藏文件"),
 		chk(&d.closeOnExit, "SSH 会话正常退出时自动关闭页面"),
+		chk(&d.recentOrder, "首页连接按最近使用排序"),
 		func(gtx layout.Context) layout.Dimensions {
 			if d.errMsg == "" {
 				return layout.Dimensions{}

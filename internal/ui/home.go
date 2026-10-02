@@ -11,6 +11,7 @@ import (
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/op/clip"
+	"gioui.org/op/paint"
 	"gioui.org/unit"
 	"gioui.org/widget"
 
@@ -34,6 +35,7 @@ type homeView struct {
 	newBtn    widget.Clickable
 	profiles  []store.Profile
 	sel       int
+	drag      homeDrag
 }
 
 func newHomeView(a *App) *homeView {
@@ -45,6 +47,16 @@ func newHomeView(a *App) *homeView {
 
 func (h *homeView) refresh() {
 	h.profiles = h.a.st.Profiles()
+}
+
+// title draws a profile's name; one without a name shows its host, which
+// privacy mode hides.
+func (h *homeView) title(gtx layout.Context, p store.Profile) layout.Dimensions {
+	th := h.a.th
+	if p.Name == "" {
+		return th.secretTxtW(gtx, p.Title(), 14, th.Text, font.Medium)
+	}
+	return th.txtW(gtx, p.Title(), 14, th.Text, font.Medium)
 }
 
 // parseQuick interprets "[user@]host[:port]".
@@ -154,6 +166,11 @@ func (h *homeView) Layout(gtx layout.Context) layout.Dimensions {
 	}
 	list := h.filtered()
 	query := h.search.Text()
+	h.drag.events(gtx, h, strings.TrimSpace(query) == "" && len(list) > 1)
+	if h.drag.dropped {
+		list = h.filtered()
+	}
+	h.drag.beginFrame()
 	quick, hasQuick := parseQuick(query)
 	if hasQuick {
 		// Offer a direct connection when the text looks like an address, or
@@ -222,7 +239,11 @@ func (h *homeView) Layout(gtx layout.Context) layout.Dimensions {
 			c = &profCard{}
 			h.cards[p.ID] = c
 		}
-		if c.edit.Clicked(gtx) {
+		if h.drag.dropped || h.drag.active {
+			// The press started a drag, not a click.
+			for c.click.Clicked(gtx) {
+			}
+		} else if c.edit.Clicked(gtx) {
 			h.editProfile(p, false)
 		} else if c.click.Clicked(gtx) {
 			a.Connect(p)
@@ -324,6 +345,7 @@ func (h *homeView) Layout(gtx layout.Context) layout.Dimensions {
 				name = "未分组"
 			}
 		}
+		h.drag.rowHead[len(rows)] = g.name
 		rows = append(rows, func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Top: 22, Bottom: 10, Left: 2}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Alignment: layout.Baseline}.Layout(gtx,
@@ -337,16 +359,42 @@ func (h *homeView) Layout(gtx layout.Context) layout.Dimensions {
 				)
 			})
 		})
+		cardH := gtx.Dp(74)
+		h.drag.cardSz = image.Pt(cardW, cardH)
 		for start := 0; start < len(g.idx); start += perRow {
 			start := start
+			ri := len(rows)
+			n := min(perRow, len(g.idx)-start)
+			for c := 0; c < n; c++ {
+				k := start + c
+				dc := dragCard{r: image.Rect(c*(cardW+gap), 0, c*(cardW+gap)+cardW, cardH), p: list[g.idx[k]]}
+				if k+1 < len(g.idx) {
+					dc.next = list[g.idx[k+1]].ID
+				}
+				h.drag.rowCards[ri] = append(h.drag.rowCards[ri], dc)
+			}
+			if start+n == len(g.idx) {
+				// The rest of the group's last row takes drops for its end.
+				x := n*(cardW+gap) - gap
+				h.drag.rowEnd[ri] = dragZone{r: image.Rect(x, 0, max(colW, x+gap), cardH), group: g.name}
+			}
 			rows = append(rows, func(gtx layout.Context) layout.Dimensions {
 				hgt := 0
-				for c := 0; c < perRow && start+c < len(g.idx); c++ {
+				for c := 0; c < n; c++ {
 					i := g.idx[start+c]
 					st := op.Offset(image.Pt(c*(cardW+gap), 0)).Push(gtx.Ops)
 					cg := gtx
-					cg.Constraints = layout.Exact(image.Pt(cardW, gtx.Dp(74)))
-					d := h.card(cg, list[i], h.sel == i+base)
+					cg.Constraints = layout.Exact(image.Pt(cardW, cardH))
+					// The dragged card stays faintly in its old place.
+					var fade paint.OpacityStack
+					dragged := h.drag.active && list[i].ID == h.drag.id
+					if dragged {
+						fade = paint.PushOpacity(gtx.Ops, 0.35)
+					}
+					d := h.card(cg, list[i], h.sel == i+base && !h.drag.active)
+					if dragged {
+						fade.Pop()
+					}
 					st.Pop()
 					hgt = d.Size.Y
 				}
@@ -363,9 +411,13 @@ func (h *homeView) Layout(gtx layout.Context) layout.Dimensions {
 
 	th.list(cgtx, &h.list, len(rows), func(gtx layout.Context, i int) layout.Dimensions {
 		gtx.Constraints.Min.X = gtx.Constraints.Max.X
-		return rows[i](gtx)
+		d := rows[i](gtx)
+		h.drag.rowH[i] = d.Size.Y
+		return d
 	})
 	st.Pop()
+	h.drag.endFrame(h.list.Position, x0, colW)
+	h.drag.layout(gtx, th, h, size)
 	return layout.Dimensions{Size: size}
 }
 
@@ -468,11 +520,11 @@ func (h *homeView) card(gtx layout.Context, p store.Profile, selected bool) layo
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 					return column(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return th.txtW(gtx, p.Title(), 14, th.Text, font.Medium)
+							return h.title(gtx, p)
 						}),
 						vspace(3),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return Label{Text: p.Addr(), Size: 12, Color: th.Text2, Mono: true}.Layout(gtx, th)
+							return th.secretLabel(gtx, Label{Text: p.Addr(), Size: 12, Color: th.Text2, Mono: true})
 						}),
 						vspace(3),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
