@@ -33,15 +33,23 @@ import (
 	"nlrshell/internal/ui"
 )
 
-// host records the window mode the titlebar buttons ask for; the shot
-// renderer has no window system to apply it to.
+// host records the window mode the titlebar buttons ask for and any close
+// request; the shot renderer has no window system to apply them to.
 type host struct {
 	mode app.WindowMode
+	// closeAsked is set when the app asks the window to close.
+	closeAsked bool
 }
 
-func (h *host) Invalidate()           {}
-func (h *host) Perform(system.Action) {}
-func (h *host) HWND() uintptr         { return 0 }
+func (h *host) Invalidate() {}
+
+func (h *host) Perform(a system.Action) {
+	if a == system.ActionClose {
+		h.closeAsked = true
+	}
+}
+
+func (h *host) HWND() uintptr { return 0 }
 func (h *host) SetWindowMode(m app.WindowMode) {
 	h.mode = m
 }
@@ -486,5 +494,61 @@ func main() {
 		d.typeText("exit\n")
 		d.until("close", func() bool { return sess().State() == sshx.StateClosed })
 		d.shot("closed")
+		// CloseOnExit defaults to off, so the window must stay open.
+		if d.host.closeAsked {
+			fail("the window was closed although CloseOnExit is off by default")
+		}
+	}
+	if want("exit-close") {
+		// Switch the setting on in the dialog, then let shells exit with
+		// status 0: the session's page must close, and the window must
+		// follow only the last page.
+		if sess().State() == sshx.StateClosed {
+			// The "closed" shot ran first; reconnect so that switching the
+			// setting on does not close the already exited page.
+			sess().Reconnect()
+			d.until("reconnect", func() bool { return sess().State() == sshx.StateConnected })
+		}
+		if st.Settings().CloseOnExit {
+			fail("CloseOnExit should default to off")
+		}
+		a.OpenSettings()
+		d.run(100 * time.Millisecond)
+		// The settings dialog is centered and 650dp tall; the check box is
+		// its last row, 571dp below the top edge.
+		top := (float32(d.size.Y) - d.px(650)) / 2
+		d.click(d.px(500), top+d.px(571), pointer.ButtonPrimary)
+		d.key(key.NameReturn, 0) // 保存
+		d.run(100 * time.Millisecond)
+		if !st.Settings().CloseOnExit {
+			fail("saving the settings dialog did not store CloseOnExit")
+		}
+		// Exiting one of two sessions closes its page and nothing else.
+		st.SetPassword(demo.ID, "demo")
+		prof, _ := st.Profile(demo.ID)
+		a.Connect(prof)
+		d.until("second tab", func() bool { return a.TabCount() == 2 })
+		second := a.Sessions()[1]
+		d.until("second session", func() bool { return second.State() == sshx.StateConnected })
+		d.typeText("exit\n")
+		d.until("page closed", func() bool { return a.TabCount() == 1 })
+		if second.State() != sshx.StateClosed {
+			fail("the second session did not exit")
+		}
+		if sess().State() != sshx.StateConnected {
+			fail("the other session was closed with the page")
+		}
+		if d.host.closeAsked {
+			fail("the window was closed although another page is still open")
+		}
+		// The last page closes and leaves the home page showing.
+		a.ShowTab(0)
+		d.run(100 * time.Millisecond)
+		d.typeText("exit\n")
+		d.until("last page closed", func() bool { return a.TabCount() == 0 })
+		if d.host.closeAsked {
+			fail("the window was closed instead of showing the home page")
+		}
+		d.shot("exit-close")
 	}
 }

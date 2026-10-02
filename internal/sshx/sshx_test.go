@@ -156,10 +156,23 @@ func TestConnectShellAndPasswordSave(t *testing.T) {
 	if _, _, err := s.Info(); err != nil {
 		t.Fatalf("clean exit reported error: %v", err)
 	}
+	if code, ok := s.ExitCode(); !ok || code != 0 {
+		t.Fatalf("exit code = %d, ok = %v; want 0, true", code, ok)
+	}
 
 	// Reconnect works on the same session object.
 	s.Reconnect()
 	waitFor(t, "reconnect", func() bool { return s.State() == sshx.StateConnected })
+	if code, ok := s.ExitCode(); ok {
+		t.Fatalf("exit code %d survived the reconnect", code)
+	}
+
+	// Closing locally is not a remote exit, so no status is reported.
+	s.Close()
+	waitFor(t, "close locally", func() bool { return s.State() == sshx.StateClosed })
+	if code, ok := s.ExitCode(); ok {
+		t.Fatalf("locally closed session reported exit code %d", code)
+	}
 }
 
 func TestMonitorAndCwd(t *testing.T) {

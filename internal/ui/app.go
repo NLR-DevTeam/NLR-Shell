@@ -226,6 +226,26 @@ func (a *App) setFontSize(size float32) {
 
 // ---- Layout -----------------------------------------------------------
 
+// closeOnExit closes the page of a session whose remote shell exited with
+// status 0, when the setting is on. With the last page gone the home page
+// shows; the program itself keeps running.
+func (a *App) closeOnExit() {
+	if !a.set.CloseOnExit {
+		return
+	}
+	for _, t := range a.tabs {
+		sv, ok := t.(*sessionView)
+		if !ok {
+			continue
+		}
+		if code, ok := sv.sess.ExitCode(); !ok || code != 0 {
+			continue
+		}
+		a.removeTab(sv)
+		return
+	}
+}
+
 // Layout draws the whole window.
 func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.size = gtx.Constraints.Max
@@ -254,6 +274,8 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 		}
 	}
 	a.shortcuts(gtx)
+
+	a.closeOnExit()
 
 	root := clip.Rect{Max: a.size}.Push(gtx.Ops)
 	event.Op(gtx.Ops, a)

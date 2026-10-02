@@ -635,6 +635,7 @@ type settingsDialog struct {
 	fontSize, scrollback, interval, downloadDir Field
 	fontFamily, cjkFont                         fontCombo
 	copySel, commandBar, follow, hidden         widget.Bool
+	closeOnExit                                 widget.Bool
 	browseClk                                   widget.Clickable
 	closeClk, cancelClk, saveClk                widget.Clickable
 	errMsg                                      string
@@ -706,6 +707,7 @@ func newSettingsDialog(a *App) *settingsDialog {
 	d.interval.SetText(strconv.Itoa(s.MonitorInterval))
 	d.downloadDir.SetText(s.DownloadDir)
 	d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value = s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden
+	d.closeOnExit.Value = s.CloseOnExit
 	d.appearance, d.accent, d.rightClick, d.background = s.Appearance, s.Accent, s.RightClick, s.Background
 	return d
 }
@@ -741,6 +743,7 @@ func (d *settingsDialog) Submit(a *App) {
 			s.DownloadDir = dir
 		}
 		s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden = d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value
+		s.CloseOnExit = d.closeOnExit.Value
 		s.Appearance, s.Accent, s.RightClick, s.Background = d.appearance, d.accent, d.rightClick, d.background
 	})
 	a.applyTheme()
@@ -833,6 +836,7 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		chk(&d.copySel, "选中即复制"),
 		chk(&d.follow, "文件跟随终端目录"),
 		chk(&d.hidden, "显示隐藏文件"),
+		chk(&d.closeOnExit, "SSH 会话正常退出时自动关闭页面"),
 		func(gtx layout.Context) layout.Dimensions {
 			if d.errMsg == "" {
 				return layout.Dimensions{}

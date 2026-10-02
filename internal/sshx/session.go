@@ -61,8 +61,12 @@ type Session struct {
 	cols   int
 	rows   int
 	closed bool
-	cwd    string
-	cwdSeq int
+	// exitCode is the status reported by the remote shell, valid when
+	// exitOK is set.
+	exitCode int
+	exitOK   bool
+	cwd      string
+	cwdSeq   int
 	// markerOK is set when the server accepted LC_NLRSHELL for the shell.
 	markerOK bool
 	title    string
@@ -125,6 +129,7 @@ func NewSession(p store.Profile, st *store.Store, prompter Prompter, notify func
 func (s *Session) Start() {
 	s.mu.Lock()
 	s.state, s.err, s.closed = StateConnecting, nil, false
+	s.exitCode, s.exitOK = 0, false
 	s.status = "正在连接 …"
 	d := &dialer{st: s.st, prompter: s.prompter, status: s.setStatus}
 	s.dialer = d
@@ -167,6 +172,25 @@ func (s *Session) State() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.state
+}
+
+// ExitCode returns the status the remote shell exited with and whether one
+// was reported. A status is reported only for a remote exit: a session
+// closed locally, or one whose connection dropped, reports none.
+func (s *Session) ExitCode() (code int, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exitCode, s.exitOK
+}
+
+// noteExit records the exit status of the remote shell, unless the session
+// was closed locally, so that closing a tab never looks like a clean exit.
+func (s *Session) noteExit(code int) {
+	s.mu.Lock()
+	if !s.closed {
+		s.exitCode, s.exitOK = code, true
+	}
+	s.mu.Unlock()
 }
 
 // Title returns the title set by the remote shell, if any.
@@ -324,7 +348,11 @@ func (s *Session) run(d *dialer) {
 	var exitErr *ssh.ExitError
 	var missing *ssh.ExitMissingError
 	switch {
-	case werr == nil, errors.As(werr, &exitErr):
+	case werr == nil:
+		s.noteExit(0)
+		s.fail(nil)
+	case errors.As(werr, &exitErr):
+		s.noteExit(exitErr.ExitStatus())
 		s.fail(nil)
 	case errors.As(werr, &missing), errors.Is(werr, io.EOF):
 		s.fail(errors.New("连接已断开"))

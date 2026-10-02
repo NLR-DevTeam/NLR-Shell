@@ -118,8 +118,11 @@ type Settings struct {
 	RightClickPaste bool   `json:"rightClickPaste,omitempty"`
 	RightClick      string `json:"rightClick"`
 	CommandBar      bool   `json:"commandBar"`
-	Appearance      string `json:"appearance"`
-	Accent          string `json:"accent"`
+	// CloseOnExit closes the page of a session whose remote shell exited
+	// with status 0. The last page leaves the home page showing.
+	CloseOnExit bool   `json:"closeOnExit"`
+	Appearance  string `json:"appearance"`
+	Accent      string `json:"accent"`
 	// PickerDir is the local directory the file picker was last used in.
 	PickerDir string `json:"pickerDir,omitempty"`
 	// Background is the path of an optional background image.
