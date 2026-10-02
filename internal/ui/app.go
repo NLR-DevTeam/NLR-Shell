@@ -806,7 +806,7 @@ func (a *App) appMenu() {
 }
 
 // Version is the application version shown in the about box.
-var Version = "1.1.0"
+var Version = "1.1.1"
 
 // dp converts dp to pixels using the metric of the last frame.
 func (a *App) dp(v unit.Dp) int {

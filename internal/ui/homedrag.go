@@ -204,7 +204,8 @@ func (d *homeDrag) layout(gtx layout.Context, th *Theme, h *homeView, size image
 		return
 	}
 	if t := d.target(); t.ok {
-		fillRR(gtx.Ops, t.bar, t.bar.Dx()/2, th.Accent)
+		// Round by the short side: the mark under a group title lies flat.
+		fillRR(gtx.Ops, t.bar, min(t.bar.Dx(), t.bar.Dy())/2, th.Accent)
 	}
 	var p store.Profile
 	for _, c := range d.cards {

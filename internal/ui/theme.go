@@ -243,7 +243,13 @@ func fillRR(ops *op.Ops, r image.Rectangle, radius int, c color.NRGBA) {
 	if r.Empty() {
 		return
 	}
-	paint.FillShape(ops, c, clip.UniformRRect(r, radius).Op(ops))
+	paint.FillShape(ops, c, clip.UniformRRect(r, fitRadius(r, radius)).Op(ops))
+}
+
+// fitRadius limits a corner radius to half the short side of r. A larger
+// one makes the corner arcs overshoot and draws shapes far outside r.
+func fitRadius(r image.Rectangle, radius int) int {
+	return min(radius, min(r.Dx(), r.Dy())/2)
 }
 
 // strokeRR draws a border of the given width just inside r. The outer edge
@@ -266,6 +272,7 @@ func strokeRR(ops *op.Ops, r image.Rectangle, radius int, width float32, c color
 		fillRR(ops, r, radius, c)
 		return
 	}
+	radius = fitRadius(r, radius)
 	if radius <= 0 {
 		// Square corners need no curves: four pixel-exact bars.
 		fill(ops, image.Rect(r.Min.X, r.Min.Y, r.Max.X, r.Min.Y+w), c)

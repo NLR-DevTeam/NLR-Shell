@@ -336,6 +336,24 @@ func main() {
 		if got := order(); !strings.Contains(got, "开发/树莓派 开发/测试机") {
 			fail("drag did not move 树莓派 in front of 测试机: %s", got)
 		}
+		// Onto a group title: to the front of that group, with a flat mark
+		// under the title.
+		from, to = f32.Pt(d.px(300), d.px(407)), f32.Pt(d.px(300), d.px(216))
+		d.move(from.X, from.Y)
+		d.router.Queue(pointer.Event{Kind: pointer.Press, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: from})
+		d.frame()
+		for i := 1; i <= 8; i++ {
+			p := from.Add(to.Sub(from).Mul(float32(i) / 8))
+			d.router.Queue(pointer.Event{Kind: pointer.Move, Source: pointer.Mouse, Buttons: pointer.ButtonPrimary, Position: p})
+			d.frame()
+		}
+		d.shot("home-drag-head")
+		d.router.Queue(pointer.Event{Kind: pointer.Release, Source: pointer.Mouse, Position: to})
+		d.frame()
+		d.frame()
+		if got := order(); !strings.HasPrefix(got, "生产环境/树莓派 ") {
+			fail("drop on a group title did not put 树莓派 first there: %s", got)
+		}
 		// Dropping a card back on itself neither moves nor connects it.
 		before := order()
 		d.drag(d.px(600), d.px(270), d.px(640), d.px(280))
