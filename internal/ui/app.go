@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"sync"
@@ -74,6 +75,19 @@ type App struct {
 	menu    *menu
 	dialogs []Dialog
 	toasts  []toast
+	// menuOut and dialogsOut are a menu and dialogs that were closed and are
+	// fading out; dialogAt is when each dialog opened or closed.
+	menuOut                      *menu
+	dialogsOut                   []Dialog
+	dialogAt                     map[Dialog]time.Time
+	sideFade, filesFade, cmdFade fader
+
+	// mods are the modifier keys held at the last pointer event.
+	mods key.Modifiers
+	// askExit mirrors whether closing the window asks first, for the
+	// window thread; quitting is set once the user agreed.
+	askExit, quitting atomic.Bool
+	exitDlg           *confirmDialog
 
 	logoClk, homeClk, addClk          widget.Clickable
 	homeChrome                        tabChrome
@@ -174,6 +188,54 @@ func (a *App) Shutdown() {
 	a.ext.cleanup()
 }
 
+// quit closes the window, asking first when several tabs are open; the home
+// page counts as one, so any open tab asks. Holding Shift skips the
+// question.
+func (a *App) quit() {
+	if a.mods.Contain(key.ModShift) || !a.set.ConfirmExit || len(a.tabs) == 0 {
+		a.quitting.Store(true)
+		a.host.Perform(system.ActionClose)
+		return
+	}
+	a.confirmExit()
+}
+
+func (a *App) confirmExit() {
+	if a.exitDlg != nil || len(a.tabs) == 0 {
+		return
+	}
+	check := new(widget.Bool)
+	d := &confirmDialog{
+		title:   "确认关闭",
+		message: fmt.Sprintf("您即将关闭 %d 个标签页。确定要继续吗？", len(a.tabs)+1),
+		check:   check,
+		checkLb: "以后不再提示",
+		onNo:    func() { a.exitDlg = nil },
+	}
+	d.onOK = func() {
+		a.exitDlg = nil
+		if check.Value {
+			a.updateSettings(func(s *store.Settings) { s.ConfirmExit = false })
+		}
+		a.quitting.Store(true)
+		a.host.Perform(system.ActionClose)
+	}
+	a.exitDlg = d
+	a.Open(d)
+}
+
+// CloseRequested is called when the window system asks to close the window,
+// with whether Shift is held. It reports whether the window must stay open:
+// the user is then asked, and agreeing closes it. It is safe to call from
+// any goroutine.
+func (a *App) CloseRequested(shift bool) bool {
+	if shift || a.quitting.Load() || !a.askExit.Load() {
+		return false
+	}
+	a.Post(a.confirmExit)
+	return true
+}
+
 // DropFiles handles files dragged onto the window from the file manager by
 // uploading them to the directory shown in the active tab's file panel. It
 // is safe to call from any goroutine. Only Windows installs a drop handler;
@@ -253,6 +315,8 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.size = gtx.Constraints.Max
 	a.pxPerDp = gtx.Metric.PxPerDp
 	a.runPosted()
+	a.th.animate = a.set.Animations
+	a.askExit.Store(a.set.ConfirmExit && len(a.tabs) > 0)
 	for _, fn := range a.withGtx {
 		fn(gtx)
 	}
@@ -273,6 +337,7 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 		}
 		if pe, ok := e.(pointer.Event); ok {
 			a.mouse = image.Pt(int(pe.Position.X), int(pe.Position.Y))
+			a.mods = pe.Modifiers
 		}
 	}
 	a.shortcuts(gtx)
@@ -443,7 +508,7 @@ func (a *App) layoutTitlebar(gtx layout.Context) layout.Dimensions {
 		}
 	}
 	if a.winBtns[2].Clicked(gtx) {
-		a.host.Perform(system.ActionClose)
+		a.quit()
 	}
 	if a.sideBtn.Clicked(gtx) {
 		a.updateSettings(func(s *store.Settings) { s.ShowSidebar = !s.ShowSidebar })
@@ -739,7 +804,7 @@ func (a *App) layoutTooltip(gtx layout.Context) {
 		return
 	}
 	if !t.shown {
-		t.shown, t.pos = true, a.mouse
+		t.shown, t.pos, t.shownAt = true, a.mouse, gtx.Now
 	}
 	rec := op.Record(gtx.Ops)
 	cg := gtx
@@ -784,10 +849,12 @@ func (a *App) layoutTooltip(gtx layout.Context) {
 		pos.Y = max(t.pos.Y-d.Size.Y-gtx.Dp(8), 4)
 	}
 	st := op.Offset(pos).Push(gtx.Ops)
-	r := image.Rectangle{Max: d.Size}
-	fillRR(gtx.Ops, r, gtx.Dp(5), th.Bg3)
-	strokeRR(gtx.Ops, r, gtx.Dp(5), float32(gtx.Dp(1)), th.BorderHi)
-	call.Add(gtx.Ops)
+	faded(gtx, a.animIn(gtx, t.shownAt, animMenu), image.Point{}, func() {
+		r := image.Rectangle{Max: d.Size}
+		fillRR(gtx.Ops, r, gtx.Dp(5), th.Bg3)
+		strokeRR(gtx.Ops, r, gtx.Dp(5), float32(gtx.Dp(1)), th.BorderHi)
+		call.Add(gtx.Ops)
+	})
 	st.Pop()
 }
 
@@ -801,12 +868,12 @@ func (a *App) appMenu() {
 		MenuItem{Label: "设置", Icon: icSettings, Do: func() { a.Open(newSettingsDialog(a)) }},
 		MenuItem{Label: "关于", Icon: icInfo, Do: func() { a.Open(&aboutDialog{}) }},
 		MenuItem{Sep: true},
-		MenuItem{Label: "退出", Icon: icPower, Do: func() { a.host.Perform(system.ActionClose) }},
+		MenuItem{Label: "退出", Icon: icPower, Do: a.quit},
 	)
 }
 
 // Version is the application version shown in the about box.
-var Version = "1.1.1"
+var Version = "1.2.0"
 
 // dp converts dp to pixels using the metric of the last frame.
 func (a *App) dp(v unit.Dp) int {

@@ -22,6 +22,7 @@ var (
 	procSetWindowLongPtrW = modUser32.NewProc("SetWindowLongPtrW")
 	procCallWindowProcW   = modUser32.NewProc("CallWindowProcW")
 	procDefWindowProcW    = modUser32.NewProc("DefWindowProcW")
+	procGetKeyState       = modUser32.NewProc("GetKeyState")
 )
 
 // Fonts: families are tried in order, so CJK text falls back to a font
@@ -58,10 +59,12 @@ func revealInExplorer(path string) {
 	cmd.Start()
 }
 
-// ---- File drops from Explorer -----------------------------------------
+// ---- File drops from Explorer and window closing ------------------------
 
 const (
 	wmDropFiles = 0x0233
+	wmClose     = 0x0010
+	vkShift     = 0x10
 	gwlpWndProc = ^uintptr(3) // -4
 )
 
@@ -74,6 +77,9 @@ var drop struct {
 type dropHook struct {
 	old atomic.Uintptr
 	fn  func([]string)
+	// closing is asked when the window is about to close, with whether
+	// Shift is held; returning true keeps the window open.
+	closing func(shift bool) bool
 }
 
 func dropWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
@@ -103,13 +109,21 @@ func dropWndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		}
 		return 0
 	}
+	if msg == wmClose && h.closing != nil {
+		// Covers every way of closing: the title bar, Alt+F4, the taskbar.
+		ks, _, _ := procGetKeyState.Call(vkShift)
+		if h.closing(ks&0x8000 != 0) {
+			return 0
+		}
+	}
 	r, _, _ := procCallWindowProcW.Call(old, hwnd, msg, wParam, lParam)
 	return r
 }
 
 // InstallDropHandler makes the window accept files dragged from Explorer
-// and reports their paths to fn (called on the window thread).
-func InstallDropHandler(hwnd uintptr, fn func([]string)) {
+// and reports their paths to fn, and lets closing veto closing the window.
+// Both are called on the window thread.
+func InstallDropHandler(hwnd uintptr, fn func([]string), closing func(shift bool) bool) {
 	if hwnd == 0 {
 		return
 	}
@@ -122,7 +136,7 @@ func InstallDropHandler(hwnd uintptr, fn func([]string)) {
 		drop.Unlock()
 		return
 	}
-	h := &dropHook{fn: fn}
+	h := &dropHook{fn: fn, closing: closing}
 	drop.hooks[hwnd] = h
 	cb := drop.cb
 	drop.Unlock()

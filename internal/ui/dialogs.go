@@ -755,6 +755,7 @@ type settingsDialog struct {
 	fontFamily, cjkFont                         fontCombo
 	copySel, commandBar, follow, hidden         widget.Bool
 	closeOnExit, recentOrder                    widget.Bool
+	confirmExit, animations                     widget.Bool
 	browseClk                                   widget.Clickable
 	closeClk, cancelClk, saveClk                widget.Clickable
 	errMsg                                      string
@@ -827,6 +828,7 @@ func newSettingsDialog(a *App) *settingsDialog {
 	d.downloadDir.SetText(s.DownloadDir)
 	d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value = s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden
 	d.closeOnExit.Value = s.CloseOnExit
+	d.confirmExit.Value, d.animations.Value = s.ConfirmExit, s.Animations
 	d.recentOrder.Value = !a.st.ManualOrder()
 	d.appearance, d.accent, d.rightClick, d.background = s.Appearance, s.Accent, s.RightClick, s.Background
 	return d
@@ -864,6 +866,7 @@ func (d *settingsDialog) Submit(a *App) {
 		}
 		s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden = d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value
 		s.CloseOnExit = d.closeOnExit.Value
+		s.ConfirmExit, s.Animations = d.confirmExit.Value, d.animations.Value
 		s.Appearance, s.Accent, s.RightClick, s.Background = d.appearance, d.accent, d.rightClick, d.background
 	})
 	a.applyTheme()
@@ -960,6 +963,8 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 		chk(&d.hidden, "显示隐藏文件"),
 		chk(&d.closeOnExit, "SSH 会话正常退出时自动关闭页面"),
 		chk(&d.recentOrder, "首页连接按最近使用排序"),
+		chk(&d.confirmExit, "关闭多个标签页时确认"),
+		chk(&d.animations, "启用动画"),
 		func(gtx layout.Context) layout.Dimensions {
 			if d.errMsg == "" {
 				return layout.Dimensions{}

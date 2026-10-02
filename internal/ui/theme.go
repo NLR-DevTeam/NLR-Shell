@@ -27,6 +27,10 @@ type Theme struct {
 	Face    font.Typeface
 	Mono    font.Typeface
 	tip     *tooltip
+	// animate mirrors the animations setting; scrolls holds the lists that
+	// are still travelling after a turn of the wheel.
+	animate bool
+	scrolls map[*widget.List]*smoothScroll
 
 	Bg0      color.NRGBA // window and terminal background
 	Bg1      color.NRGBA // panels

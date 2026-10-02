@@ -111,6 +111,8 @@ type tooltip struct {
 	seen  bool
 	shown bool
 	pos   image.Point
+	// shownAt is when the tooltip appeared, for its fade.
+	shownAt time.Time
 }
 
 // tipRow is one line of a hover card: an icon and a value.
@@ -478,7 +480,10 @@ func (th *Theme) list(gtx layout.Context, l *widget.List, n int, el layout.ListE
 	ls.Indicator.MinorWidth = 6
 	ls.Track.MinorPadding = 2
 	ls.Track.MajorPadding = 2
-	return ls.Layout(gtx, n, el)
+	th.scrollStep(gtx, l)
+	d := ls.Layout(gtx, n, el)
+	th.scrollArea(gtx, l, d.Size)
+	return d
 }
 
 // listFade tracks when an auto-hiding scrollbar should show.
@@ -511,7 +516,9 @@ func (th *Theme) autoHideList(gtx layout.Context, l *widget.List, st *listFade, 
 	if !hovered && !recent && !l.Scrollbar.Dragging() {
 		ls.Indicator.Color, ls.Indicator.HoverColor = color.NRGBA{}, color.NRGBA{}
 	}
+	th.scrollStep(gtx, l)
 	d := ls.Layout(gtx, n, el)
+	th.scrollArea(gtx, l, d.Size)
 	// Watch for the pointer without taking events from the list.
 	area := clip.Rect{Max: d.Size}.Push(gtx.Ops)
 	pass := pointer.PassOp{}.Push(gtx.Ops)

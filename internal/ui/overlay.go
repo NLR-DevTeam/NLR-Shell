@@ -3,6 +3,7 @@ package ui
 import (
 	"image"
 	"image/color"
+	"slices"
 	"time"
 
 	"gioui.org/font"
@@ -37,6 +38,8 @@ type menu struct {
 	// keepFocus leaves keyboard focus where it was when the menu closes,
 	// for menus that act on a focused input.
 	keepFocus bool
+	// opened and closed time the menu's fade in and out.
+	opened, closed time.Time
 }
 
 // Menu opens a popup menu at the pointer position.
@@ -46,13 +49,16 @@ func (a *App) Menu(items ...MenuItem) {
 
 // MenuAt opens a popup menu at pos (window coordinates).
 func (a *App) MenuAt(pos image.Point, items ...MenuItem) {
-	a.menu = &menu{items: items, clicks: make([]widget.Clickable, len(items)), pos: pos}
+	a.menu = &menu{items: items, clicks: make([]widget.Clickable, len(items)), pos: pos, opened: time.Now()}
 	a.host.Invalidate()
 }
 
 func (a *App) closeMenu() {
 	if a.menu != nil {
 		a.refocus = a.refocus || !a.menu.keepFocus
+		// The closed menu stays around to fade out.
+		a.menu.closed = time.Now()
+		a.menuOut = a.menu
 		a.menu = nil
 	}
 }
@@ -71,11 +77,37 @@ func shadow(ops *op.Ops, r image.Rectangle, radius int) {
 }
 
 func (a *App) layoutMenu(gtx layout.Context) {
+	a.menuEvents(gtx)
+	// The fading menu is drawn after the events are handled: a menu closed
+	// by a click this frame must still be drawn, or it would vanish for a
+	// frame before it fades.
+	if out := a.menuOut; out != nil {
+		if p := 1 - a.animIn(gtx, out.closed, animMenu); p > 0 {
+			// Pass-through, so that a click on the fading menu reaches
+			// what is below it.
+			pass := pointer.PassOp{}.Push(gtx.Ops)
+			a.drawMenu(gtx.Disabled(), out, p)
+			pass.Pop()
+		} else {
+			a.menuOut = nil
+		}
+	}
 	m := a.menu
 	if m == nil {
 		return
 	}
-	th := a.th
+	area := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
+	event.Op(gtx.Ops, &m.scrim)
+	area.Pop()
+	a.drawMenu(gtx, m, a.animIn(gtx, m.opened, animMenu))
+}
+
+// menuEvents handles the clicks on the open menu and beside it.
+func (a *App) menuEvents(gtx layout.Context) {
+	m := a.menu
+	if m == nil {
+		return
+	}
 	for {
 		e, ok := gtx.Event(pointer.Filter{Target: &m.scrim, Kinds: pointer.Press})
 		if !ok {
@@ -98,13 +130,12 @@ func (a *App) layoutMenu(gtx layout.Context) {
 			gtx.Execute(op.InvalidateCmd{})
 		}
 	}
-	if a.menu == nil {
-		return
-	}
-	area := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
-	event.Op(gtx.Ops, &m.scrim)
-	area.Pop()
+}
 
+// drawMenu draws m at opacity p. A disabled context draws a menu that is
+// fading out and no longer takes input.
+func (a *App) drawMenu(gtx layout.Context, m *menu, p float32) {
+	th := a.th
 	// Measure the widest row.
 	width := gtx.Dp(180)
 	for i := range m.items {
@@ -201,15 +232,19 @@ func (a *App) layoutMenu(gtx layout.Context) {
 		pos.Y = max(pos.Y-d.Size.Y, 4)
 	}
 	st := op.Offset(pos).Push(gtx.Ops)
-	r := image.Rectangle{Max: d.Size}
-	shadow(gtx.Ops, r, gtx.Dp(8))
-	fillRR(gtx.Ops, r, gtx.Dp(8), th.Bg2)
-	strokeRR(gtx.Ops, r, gtx.Dp(8), float32(gtx.Dp(1)), th.BorderHi)
-	// The menu itself swallows clicks that miss an item.
-	ca := clip.Rect(r).Push(gtx.Ops)
-	event.Op(gtx.Ops, m)
-	call.Add(gtx.Ops)
-	ca.Pop()
+	faded(gtx, p, image.Pt(0, -gtx.Dp(6)), func() {
+		r := image.Rectangle{Max: d.Size}
+		shadow(gtx.Ops, r, gtx.Dp(8))
+		fillRR(gtx.Ops, r, gtx.Dp(8), th.Bg2)
+		strokeRR(gtx.Ops, r, gtx.Dp(8), float32(gtx.Dp(1)), th.BorderHi)
+		// The menu itself swallows clicks that miss an item.
+		ca := clip.Rect(r).Push(gtx.Ops)
+		if gtx.Enabled() {
+			event.Op(gtx.Ops, m)
+		}
+		call.Add(gtx.Ops)
+		ca.Pop()
+	})
 	st.Pop()
 }
 
@@ -230,6 +265,16 @@ type multiline interface{ Multiline() bool }
 // Open shows a dialog.
 func (a *App) Open(d Dialog) {
 	a.dialogs = append(a.dialogs, d)
+	if a.dialogAt == nil {
+		a.dialogAt = map[Dialog]time.Time{}
+	}
+	a.dialogAt[d] = time.Now()
+	for i, x := range a.dialogsOut {
+		if x == d {
+			a.dialogsOut = append(a.dialogsOut[:i], a.dialogsOut[i+1:]...)
+			break
+		}
+	}
 	a.closeMenu()
 	a.host.Invalidate()
 }
@@ -239,6 +284,13 @@ func (a *App) Close(d Dialog) {
 	for i, x := range a.dialogs {
 		if x == d {
 			a.dialogs = append(a.dialogs[:i], a.dialogs[i+1:]...)
+			// The closed dialog stays around to fade out.
+			if a.set.Animations {
+				a.dialogAt[d] = time.Now()
+				a.dialogsOut = append(a.dialogsOut, d)
+			} else {
+				delete(a.dialogAt, d)
+			}
 			break
 		}
 	}
@@ -247,15 +299,29 @@ func (a *App) Close(d Dialog) {
 }
 
 func (a *App) layoutDialogs(gtx layout.Context) {
-	for i, d := range a.dialogs {
+	scrim := color.NRGBA{A: 0x8c}
+	if a.th.Light {
+		scrim = color.NRGBA{R: 0x1c, G: 0x21, B: 0x28, A: 0x40}
+	}
+	draw := func(gtx layout.Context, d Dialog, p float32) {
+		c := scrim
+		c.A = uint8(float32(c.A) * p)
+		fill(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, c)
+		faded(gtx, p, image.Pt(0, gtx.Dp(10)), func() {
+			layout.Center.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return d.Layout(gtx, a)
+			})
+		})
+	}
+	// A dialog that closes itself while it is laid out has been drawn for
+	// this frame; drawing it again as a fading one would darken the scrim
+	// for a frame.
+	var drawn []Dialog
+	for i, d := range append([]Dialog(nil), a.dialogs...) {
 		top := i == len(a.dialogs)-1
+		drawn = append(drawn, d)
 		// Scrim blocks input to everything below.
 		area := clip.Rect{Max: gtx.Constraints.Max}.Push(gtx.Ops)
-		scrim := color.NRGBA{A: 0x8c}
-		if a.th.Light {
-			scrim = color.NRGBA{R: 0x1c, G: 0x21, B: 0x28, A: 0x40}
-		}
-		fill(gtx.Ops, image.Rectangle{Max: gtx.Constraints.Max}, scrim)
 		event.Op(gtx.Ops, d)
 		pointer.CursorDefault.Add(gtx.Ops)
 		for {
@@ -267,11 +333,29 @@ func (a *App) layoutDialogs(gtx layout.Context) {
 		if !top {
 			dgtx = dgtx.Disabled()
 		}
-		layout.Center.Layout(dgtx, func(gtx layout.Context) layout.Dimensions {
-			return d.Layout(gtx, a)
-		})
+		draw(dgtx, d, a.animIn(gtx, a.dialogAt[d], animDialog))
 		area.Pop()
 	}
+	// Closed dialogs fade out on top. They are pass-through, so that input
+	// reaches what is below them.
+	pass := pointer.PassOp{}.Push(gtx.Ops)
+	defer pass.Pop()
+	out := a.dialogsOut[:0]
+	for _, d := range a.dialogsOut {
+		p := 1 - a.animIn(gtx, a.dialogAt[d], animDialog)
+		if p <= 0 {
+			delete(a.dialogAt, d)
+			continue
+		}
+		out = append(out, d)
+		if !slices.Contains(drawn, d) {
+			draw(gtx.Disabled(), d, p)
+		}
+	}
+	for i := len(out); i < len(a.dialogsOut); i++ {
+		a.dialogsOut[i] = nil
+	}
+	a.dialogsOut = out
 }
 
 // dialogFrame draws the standard dialog chrome around body and footer.
@@ -342,6 +426,9 @@ type confirmDialog struct {
 	danger  bool
 	onOK    func()
 	onNo    func()
+	// check is an optional check box below the message.
+	check   *widget.Bool
+	checkLb string
 
 	closeClk, okClk, noClk widget.Clickable
 }
@@ -403,6 +490,12 @@ func (d *confirmDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 						call.Add(gtx.Ops)
 						return layout.Dimensions{Size: r.Max}
 					})
+				}),
+				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					if d.check == nil {
+						return layout.Dimensions{}
+					}
+					return th.checkbox(gtx, d.check, d.checkLb)
 				}),
 			)
 		},
@@ -518,6 +611,7 @@ const (
 type toast struct {
 	kind  int
 	msg   string
+	born  time.Time
 	until time.Time
 }
 
@@ -527,7 +621,8 @@ func (a *App) Toast(kind int, msg string) {
 	if kind == toastError {
 		d = 7 * time.Second
 	}
-	a.toasts = append(a.toasts, toast{kind: kind, msg: msg, until: time.Now().Add(d)})
+	now := time.Now()
+	a.toasts = append(a.toasts, toast{kind: kind, msg: msg, born: now, until: now.Add(d)})
 	if len(a.toasts) > 4 {
 		a.toasts = a.toasts[len(a.toasts)-4:]
 	}
@@ -573,13 +668,25 @@ func (a *App) layoutToasts(gtx layout.Context) {
 			)
 		})
 		call := rec.Stop()
+		// Toasts slide in from the right and fade away at the end.
+		p := a.animIn(gtx, t.born, animToast)
+		if a.set.Animations {
+			if left := t.until.Sub(gtx.Now); left < animToast {
+				p = min(p, float32(left)/float32(animToast))
+				gtx.Execute(op.InvalidateCmd{})
+			} else {
+				gtx.Execute(op.InvalidateCmd{At: t.until.Add(-animToast)})
+			}
+		}
 		pos := image.Pt(gtx.Constraints.Max.X-d.Size.X-gtx.Dp(16), y)
 		st := op.Offset(pos).Push(gtx.Ops)
-		r := image.Rectangle{Max: d.Size}
-		shadow(gtx.Ops, r, gtx.Dp(8))
-		fillRR(gtx.Ops, r, gtx.Dp(8), th.Bg2)
-		strokeRR(gtx.Ops, r, gtx.Dp(8), float32(gtx.Dp(1)), mix(th.BorderHi, c, 0.35))
-		call.Add(gtx.Ops)
+		faded(gtx, p, image.Pt(gtx.Dp(16), 0), func() {
+			r := image.Rectangle{Max: d.Size}
+			shadow(gtx.Ops, r, gtx.Dp(8))
+			fillRR(gtx.Ops, r, gtx.Dp(8), th.Bg2)
+			strokeRR(gtx.Ops, r, gtx.Dp(8), float32(gtx.Dp(1)), mix(th.BorderHi, c, 0.35))
+			call.Add(gtx.Ops)
+		})
 		st.Pop()
 		y += d.Size.Y + gtx.Dp(8)
 	}

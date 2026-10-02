@@ -500,13 +500,23 @@ func (fv *filesView) fileMenu() {
 		MenuItem{Sep: true},
 		MenuItem{Label: "删除", Icon: icDelete, Hint: "Del", Danger: true, Do: func() { fv.remove(sel) }},
 	)
+	fv.menu(items...)
+}
+
+// menu opens a context menu of the file list. The list keeps the keyboard
+// focus when the menu closes, so its selection does not turn inactive.
+func (fv *filesView) menu(items ...MenuItem) {
+	a := fv.a
 	a.Menu(items...)
+	if a.menu != nil {
+		a.menu.keepFocus = true
+	}
 }
 
 func (fv *filesView) bgMenu() {
 	a := fv.a
 	ok := fv.path != "" && fv.sv.sess.State() == sshx.StateConnected
-	a.Menu(
+	fv.menu(
 		MenuItem{Label: "上传文件…", Icon: icUpload, Disabled: !ok, Do: func() { fv.pickUpload(false) }},
 		MenuItem{Label: "上传文件夹…", Disabled: !ok, Do: func() { fv.pickUpload(true) }},
 		MenuItem{Sep: true},

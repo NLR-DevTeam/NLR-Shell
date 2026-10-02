@@ -21,5 +21,5 @@ func platformEvent(h *host, a *ui.App, e event.Event) {
 	// is parked while we handle this event, so a cross-thread call that
 	// sends it a message would deadlock.
 	hwnd := v.HWND
-	h.w.Run(func() { ui.InstallDropHandler(hwnd, a.DropFiles) })
+	h.w.Run(func() { ui.InstallDropHandler(hwnd, a.DropFiles, a.CloseRequested) })
 }

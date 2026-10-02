@@ -136,6 +136,10 @@ type Settings struct {
 	// CloseOnExit closes the page of a session whose remote shell exited
 	// with status 0. The last page leaves the home page showing.
 	CloseOnExit bool `json:"closeOnExit"`
+	// ConfirmExit asks before the program exits with several tabs open.
+	ConfirmExit bool `json:"confirmExit"`
+	// Animations fades menus, dialogs and panels and smooths list scrolling.
+	Animations bool `json:"animations"`
 	// Privacy hides server addresses and system information in the UI.
 	Privacy    bool   `json:"privacy,omitempty"`
 	Appearance string `json:"appearance"`
@@ -189,6 +193,8 @@ func DefaultSettings() Settings {
 		MonitorInterval: 2,
 		RightClick:      RightClickMenu,
 		CommandBar:      true,
+		ConfirmExit:     true,
+		Animations:      true,
 		Appearance:      AppearanceDark,
 		Accent:          AccentGreen,
 		WindowWidth:     1280,

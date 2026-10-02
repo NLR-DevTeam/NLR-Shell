@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"io"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"gioui.org/font"
 	"gioui.org/io/clipboard"
@@ -38,6 +40,9 @@ type sessionView struct {
 	overlayTag                      bool
 	clipSeq                         int
 	lastState                       sshx.State
+	// stateAt is when the connection state last changed, for the fade of
+	// the connecting card and the disconnected banner.
+	stateAt time.Time
 	// pending holds terminal actions chosen from a menu; they run on the
 	// next frame because they need a layout context.
 	pending []string
@@ -194,7 +199,7 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 
 	state, status, err := sv.sess.Info()
 	if state != sv.lastState {
-		sv.lastState = state
+		sv.lastState, sv.stateAt = state, gtx.Now
 		if state == sshx.StateConnected {
 			sv.files.onConnected()
 		}
@@ -205,27 +210,38 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 		sv.term.Focus(gtx)
 	}
 
+	// section draws a panel that fades in and out as it is switched on and
+	// off; it keeps its place until it has faded out.
+	section := func(gtx layout.Context, f *fader, on bool, w layout.Widget) layout.Dimensions {
+		p := f.step(gtx, a, on)
+		if p <= 0 {
+			return layout.Dimensions{}
+		}
+		var d layout.Dimensions
+		faded(gtx, p, image.Point{}, func() { d = w(gtx) })
+		return d
+	}
+
 	return layout.Flex{}.Layout(gtx,
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			if !set.ShowSidebar {
-				return layout.Dimensions{}
-			}
-			w := set.SidebarWidth
-			hi := max(int(float32(gtx.Constraints.Max.X)/gtx.Metric.PxPerDp)-360, 200)
-			return layout.Flex{}.Layout(gtx,
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					px := gtx.Dp(unit.Dp(min(w, hi)))
-					gtx.Constraints = layout.Exact(image.Pt(px, gtx.Constraints.Max.Y))
-					return sv.mon.Layout(gtx)
-				}),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					d := sv.sideSplit.Layout(gtx, th, layout.Horizontal, &w, 200, hi, 1, a.mouse)
-					if w != set.SidebarWidth {
-						a.updateSettings(func(s *store.Settings) { s.SidebarWidth = w })
-					}
-					return d
-				}),
-			)
+			return section(gtx, &a.sideFade, set.ShowSidebar, func(gtx layout.Context) layout.Dimensions {
+				w := set.SidebarWidth
+				hi := max(int(float32(gtx.Constraints.Max.X)/gtx.Metric.PxPerDp)-360, 200)
+				return layout.Flex{}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						px := gtx.Dp(unit.Dp(min(w, hi)))
+						gtx.Constraints = layout.Exact(image.Pt(px, gtx.Constraints.Max.Y))
+						return sv.mon.Layout(gtx)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						d := sv.sideSplit.Layout(gtx, th, layout.Horizontal, &w, 200, hi, 1, a.mouse)
+						if w != set.SidebarWidth {
+							a.updateSettings(func(s *store.Settings) { s.SidebarWidth = w })
+						}
+						return d
+					}),
+				)
+			})
 		}),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			total := gtx.Constraints.Max.Y
@@ -238,33 +254,29 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 							return d
 						}),
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							if !set.CommandBar {
-								return layout.Dimensions{}
-							}
-							return sv.cmd.Layout(gtx)
+							return section(gtx, &a.cmdFade, set.CommandBar, sv.cmd.Layout)
 						}),
 					)
 				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					if !set.ShowFiles {
-						return layout.Dimensions{}
-					}
-					h := set.FilesHeight
-					hi := max(int(float32(total)/gtx.Metric.PxPerDp)-140, 120)
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							d := sv.filesSplit.Layout(gtx, th, layout.Vertical, &h, 120, hi, -1, a.mouse)
-							if h != set.FilesHeight {
-								a.updateSettings(func(s *store.Settings) { s.FilesHeight = h })
-							}
-							return d
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							px := gtx.Dp(unit.Dp(min(h, hi)))
-							gtx.Constraints = layout.Exact(image.Pt(gtx.Constraints.Max.X, px))
-							return sv.files.Layout(gtx)
-						}),
-					)
+					return section(gtx, &a.filesFade, set.ShowFiles, func(gtx layout.Context) layout.Dimensions {
+						h := set.FilesHeight
+						hi := max(int(float32(total)/gtx.Metric.PxPerDp)-140, 120)
+						return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								d := sv.filesSplit.Layout(gtx, th, layout.Vertical, &h, 120, hi, -1, a.mouse)
+								if h != set.FilesHeight {
+									a.updateSettings(func(s *store.Settings) { s.FilesHeight = h })
+								}
+								return d
+							}),
+							layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+								px := gtx.Dp(unit.Dp(min(h, hi)))
+								gtx.Constraints = layout.Exact(image.Pt(gtx.Constraints.Max.X, px))
+								return sv.files.Layout(gtx)
+							}),
+						)
+					})
 				}),
 			)
 		}),
@@ -319,18 +331,23 @@ func (sv *sessionView) layoutTerminal(gtx layout.Context, state sshx.State, stat
 		call := rec.Stop()
 		pos := image.Pt((size.X-d.Size.X)/2, (size.Y-d.Size.Y)/2)
 		st := op.Offset(pos).Push(gtx.Ops)
-		r := image.Rectangle{Max: d.Size}
-		shadow(gtx.Ops, r, gtx.Dp(10))
-		fillRR(gtx.Ops, r, gtx.Dp(10), th.Bg2)
-		strokeRR(gtx.Ops, r, gtx.Dp(10), float32(gtx.Dp(1)), th.BorderHi)
-		ar := clip.Rect(r).Push(gtx.Ops)
-		event.Op(gtx.Ops, &sv.overlayTag)
-		call.Add(gtx.Ops)
-		ar.Pop()
+		faded(gtx, a.animIn(gtx, sv.stateAt, animPanel), image.Point{}, func() {
+			r := image.Rectangle{Max: d.Size}
+			shadow(gtx.Ops, r, gtx.Dp(10))
+			fillRR(gtx.Ops, r, gtx.Dp(10), th.Bg2)
+			strokeRR(gtx.Ops, r, gtx.Dp(10), float32(gtx.Dp(1)), th.BorderHi)
+			ar := clip.Rect(r).Push(gtx.Ops)
+			event.Op(gtx.Ops, &sv.overlayTag)
+			call.Add(gtx.Ops)
+			ar.Pop()
+		})
 		st.Pop()
 	case sshx.StateClosed:
 		// A banner along the bottom edge.
 		msg, c, ic := "已断开", th.Text2, icInfo
+		if code, ok := sv.sess.ExitCode(); ok {
+			msg = fmt.Sprintf("已断开（退出代码 %d）", code)
+		}
 		if err != nil {
 			msg, c, ic = err.Error(), th.Danger, icError
 		}
@@ -362,14 +379,16 @@ func (sv *sessionView) layoutTerminal(gtx layout.Context, state sshx.State, stat
 		call := rec.Stop()
 		pos := image.Pt((size.X-d.Size.X)/2, size.Y-d.Size.Y-gtx.Dp(14))
 		st := op.Offset(pos).Push(gtx.Ops)
-		r := image.Rectangle{Max: d.Size}
-		shadow(gtx.Ops, r, gtx.Dp(10))
-		fillRR(gtx.Ops, r, gtx.Dp(10), th.Bg2)
-		strokeRR(gtx.Ops, r, gtx.Dp(10), float32(gtx.Dp(1)), mix(th.BorderHi, c, 0.4))
-		ar := clip.Rect(r).Push(gtx.Ops)
-		event.Op(gtx.Ops, &sv.overlayTag)
-		call.Add(gtx.Ops)
-		ar.Pop()
+		faded(gtx, a.animIn(gtx, sv.stateAt, animPanel), image.Pt(0, gtx.Dp(8)), func() {
+			r := image.Rectangle{Max: d.Size}
+			shadow(gtx.Ops, r, gtx.Dp(10))
+			fillRR(gtx.Ops, r, gtx.Dp(10), th.Bg2)
+			strokeRR(gtx.Ops, r, gtx.Dp(10), float32(gtx.Dp(1)), mix(th.BorderHi, c, 0.4))
+			ar := clip.Rect(r).Push(gtx.Ops)
+			event.Op(gtx.Ops, &sv.overlayTag)
+			call.Add(gtx.Ops)
+			ar.Pop()
+		})
 		st.Pop()
 	}
 	return layout.Dimensions{Size: size}

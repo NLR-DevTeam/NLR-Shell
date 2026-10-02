@@ -253,6 +253,7 @@ func main() {
 	scale := flag.Float64("scale", 1, "pixels per dp")
 	only := flag.String("only", "", "comma separated list of shots to take (default all)")
 	bgImage := flag.String("bg", "build/icon.png", "image for the background shot")
+	anim := flag.Bool("anim", false, "leave animations on (shots may catch a fade half way)")
 	flag.Parse()
 	want := func(name string) bool {
 		return *only == "" || strings.Contains(","+*only+",", ","+name+",")
@@ -280,7 +281,9 @@ func main() {
 		os.WriteFile(filepath.Join(home, "backup.tar.gz"), []byte("data"), 0o644)
 	}
 	st := store.Open(dir)
-	st.UpdateSettings(func(s *store.Settings) { s.DownloadDir = filepath.Join(dir, "dl") })
+	// Animations are off unless asked for: a screenshot must not catch a
+	// fade half way.
+	st.UpdateSettings(func(s *store.Settings) { s.DownloadDir, s.Animations = filepath.Join(dir, "dl"), *anim })
 	now := time.Now().Unix()
 	demo := st.SaveProfile(store.Profile{Name: "nlr-demo", Group: "生产环境", Host: "127.0.0.1", Port: srv.Port(), User: "demo", LastUsed: now - 120})
 	st.SaveProfile(store.Profile{Name: "web-01", Group: "生产环境", Host: "10.0.0.11", User: "root", Auth: store.AuthKey, KeyPath: `~\.ssh\id_ed25519`, LastUsed: now - 3600*5})
@@ -607,6 +610,23 @@ func main() {
 		d.move(d.px(400), d.px(20))
 		d.run(700 * time.Millisecond)
 		d.shot("editor")
+		// With two tabs open the close button asks first, and Shift skips
+		// the question.
+		closeX := float32(d.size.X) - d.px(23)
+		d.click(closeX, d.px(20), pointer.ButtonPrimary)
+		d.run(300 * time.Millisecond)
+		if d.host.closeAsked || a.DialogCount() != 1 {
+			fail("closing with two tabs did not ask first")
+		}
+		d.shot("exit-confirm")
+		d.key(key.NameEscape, 0)
+		d.run(300 * time.Millisecond)
+		d.clickMods(closeX, d.px(20), pointer.ButtonPrimary, key.ModShift)
+		d.run(50 * time.Millisecond)
+		if !d.host.closeAsked {
+			fail("Shift with the close button did not skip the question")
+		}
+		d.host.closeAsked = false
 		// Middle click on the tab closes it.
 		d.click(d.px(400), d.px(20), pointer.ButtonTertiary)
 		d.until("tab closed by middle click", func() bool { return a.TabCount() == 1 })
@@ -635,9 +655,9 @@ func main() {
 		}
 		a.OpenSettings()
 		d.run(100 * time.Millisecond)
-		// The settings dialog is centered and 676dp tall; the check box is
-		// its second to last row, 565dp below the top edge.
-		top := (float32(d.size.Y) - d.px(676)) / 2
+		// The settings dialog is centered and 726dp tall; the check box is
+		// its fourth to last row, 565dp below the top edge.
+		top := (float32(d.size.Y) - d.px(726)) / 2
 		d.click(d.px(500), top+d.px(565), pointer.ButtonPrimary)
 		d.key(key.NameReturn, 0) // 保存
 		d.run(100 * time.Millisecond)
