@@ -419,6 +419,23 @@ func main() {
 	d.until("files", func() bool { return a.FilesPath() != "" })
 	d.typeText("ls -l\ncolors\nbox\ncd projects/api\nls\n")
 	d.run(2500 * time.Millisecond)
+	if want("emoji") {
+		sess().Term.Write([]byte("\x1b[2J\x1b[H\x1b[?25l" +
+			"Emoji font / color rendering\r\n\r\n" +
+			"  🚀  Launch\r\n  🔧  Settings\r\n  📦  Packages\r\n" +
+			"  😀  Smile\r\n  🔥  Fire\r\n  🧩  Plugins\r\n  🦄  Unicode\r\n\r\n" +
+			"\x1b[1m  🚀 🔧 📦 😀 🔥 🧩 🦄  Bold\x1b[0m\r\n" +
+			"\x1b[3m  🚀 🔧 📦 😀 🔥 🧩 🦄  Italic\x1b[0m\r\n" +
+			"\x1b[1;3m  🚀 🔧 📦 😀 🔥 🧩 🦄  Bold italic\x1b[0m\r\n\r\n" +
+			"  ASCII / 中文 / emoji mixed: A🧩B 中文🚀\r\n"))
+		d.shot("emoji")
+		if *only == "emoji" {
+			return
+		}
+		sess().Term.Write([]byte("\x1b[2J\x1b[H\x1b[?25h"))
+		d.typeText("ls -l\ncolors\nbox\n")
+		d.run(250 * time.Millisecond)
+	}
 	if want("session") {
 		d.shot("session")
 	}

@@ -17,6 +17,8 @@ const defaultFont = "Cascadia Mono"
 // fallback for characters the Western font lacks.
 const defaultCJKFont = "Microsoft YaHei UI"
 
+const defaultEmojiFont = "Segoe UI Emoji"
+
 // defaultDownloadDir returns the directory downloads go to.
 func defaultDownloadDir(home string) string { return filepath.Join(home, "Downloads") }
 

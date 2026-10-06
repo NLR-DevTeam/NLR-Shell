@@ -117,22 +117,22 @@ func main() {
 	// Gio loads the window icon from resource id 1.
 	must(rs.SetIcon(winres.ID(1), icon))
 	rs.SetManifest(winres.AppManifest{
-		Identity:            winres.AssemblyIdentity{Name: "NLR.Shell", Version: [4]uint16{1, 0, 0, 0}},
+		Identity:            winres.AssemblyIdentity{Name: "NLR.Shell", Version: [4]uint16{1, 2, 1, 0}},
 		Description:         "NLR Shell",
 		DPIAwareness:        winres.DPIPerMonitorV2,
 		LongPathAware:       true,
 		UseCommonControlsV6: true,
 	})
 	var vi version.Info
-	vi.SetFileVersion("1.0.0.0")
-	vi.SetProductVersion("1.0.0.0")
+	vi.SetFileVersion("1.2.1.0")
+	vi.SetProductVersion("1.2.1.0")
 	for k, v := range map[string]string{
 		version.ProductName:      "NLR Shell",
 		version.FileDescription:  "NLR Shell",
 		version.OriginalFilename: "NLRShell.exe",
 		version.InternalName:     "NLRShell",
-		version.ProductVersion:   "1.0.0",
-		version.FileVersion:      "1.0.0",
+		version.ProductVersion:   "1.2.1",
+		version.FileVersion:      "1.2.1",
 	} {
 		must(vi.Set(version.LangDefault, k, v))
 	}

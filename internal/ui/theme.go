@@ -26,6 +26,8 @@ type Theme struct {
 	Mat     *material.Theme
 	Face    font.Typeface
 	Mono    font.Typeface
+	Emoji   font.Typeface
+	emoji   *emojiRenderer
 	tip     *tooltip
 	// animate mirrors the animations setting; scrolls holds the lists that
 	// are still travelling after a turn of the wheel.
@@ -85,9 +87,10 @@ func mix(a, b color.NRGBA, t float32) color.NRGBA {
 }
 
 // NewTheme builds the theme in the default dark palette.
-func NewTheme(western, cjk string) *Theme {
+func NewTheme(western, cjk, emoji string) *Theme {
+	collection := append(gofont.Collection(), emojiFontCollection()...)
 	th := &Theme{
-		Shaper: text.NewShaper(text.WithCollection(gofont.Collection())),
+		Shaper: text.NewShaper(text.WithCollection(collection)),
 		tip:    new(tooltip),
 		Face:   uiFont,
 	}
@@ -97,7 +100,7 @@ func NewTheme(western, cjk string) *Theme {
 	m.Face = th.Face
 	m.TextSize = 13
 	th.Mat = m
-	th.SetFonts(western, cjk)
+	th.SetFonts(western, cjk, emoji)
 	th.Apply(false, false, rgb(0x00b935))
 	return th
 }
@@ -197,11 +200,9 @@ func (th *Theme) setColors(light, lightTerm bool, accent color.NRGBA) {
 	th.Mat.Palette = material.Palette{Bg: th.Bg1, Fg: th.Text, ContrastBg: th.Accent, ContrastFg: th.AccentFg}
 }
 
-// SetFonts sets the Western font, used first in the terminal, and the
-// Chinese font, which the terminal falls back to for characters the
-// Western font lacks and which the whole UI uses. Built-in fallbacks follow
-// both, so a missing font degrades instead of showing boxes.
-func (th *Theme) SetFonts(western, cjk string) {
+// SetFonts sets the Western terminal font, Chinese UI/fallback font, and
+// preferred terminal emoji font. Built-in fallbacks follow each choice.
+func (th *Theme) SetFonts(western, cjk, emoji string) {
 	if western == "" {
 		western = defaultMono
 	}
@@ -212,8 +213,14 @@ func (th *Theme) SetFonts(western, cjk string) {
 	// The Chinese font comes after the monospace Latin fallbacks: if the
 	// Western font is missing, Latin text must not land on a proportional
 	// CJK font. Characters no Latin font has still reach the Chinese one.
-	th.Mono = font.Typeface(western + ", " + monoFallbacks + ", " + cjkList + cjkFallbacks)
-	th.Face = font.Typeface(cjkList + uiFont)
+	if emoji == "" {
+		emoji = defaultEmoji
+	}
+	emojiList := emoji + ", " + emojiFallbacks
+	th.Mono = font.Typeface(western + ", " + monoFallbacks + ", " + cjkList + cjkFallbacks + ", " + emojiList)
+	th.Face = font.Typeface(cjkList + uiFont + ", " + emojiList)
+	th.Emoji = font.Typeface(emojiList + ", " + string(th.Mono))
+	th.emoji = newEmojiRenderer(emojiList)
 	if th.Mat != nil {
 		th.Mat.Face = th.Face
 	}

@@ -102,7 +102,7 @@ type App struct {
 // New creates the app.
 func New(host Host, st *store.Store) *App {
 	set := st.Settings()
-	a := &App{host: host, st: st, set: set, th: NewTheme(set.FontFamily, set.CJKFont), active: -1}
+	a := &App{host: host, st: st, set: set, th: NewTheme(set.FontFamily, set.CJKFont, set.EmojiFont), active: -1}
 	a.activeID.Store("")
 	a.th.editMenu = a.editMenu
 	a.applyTheme()
@@ -873,7 +873,7 @@ func (a *App) appMenu() {
 }
 
 // Version is the application version shown in the about box.
-var Version = "1.2.0"
+var Version = "1.2.1"
 
 // dp converts dp to pixels using the metric of the last frame.
 func (a *App) dp(v unit.Dp) int {

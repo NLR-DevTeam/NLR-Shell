@@ -81,6 +81,12 @@ NLRShell -connect [user@]host[:port] [-identity 私钥文件] [-password 密码]
 - **凭据安全**：Windows 下密码和密钥口令直接托管给 DPAPI；Linux 环境下，密码会保存在配置目录的 `secret.key` 中（文件权限自动设为 `0600`），并通过 XChaCha20-Poly1305 加密保存，请妥善保管该密钥文件。
 - **SSH Agent**：Linux 下依赖 `SSH_AUTH_SOCK` 环境变量与系统的 `ssh-agent` 通信。
 - **桌面环境兼容性**：目前界面在 KDE Plasma 环境下测试最为充分；在其他桌面环境（如 GNOME、XFCE 或各类平铺式 WM）下自绘窗体可能会有渲染细节差异。
+- 如果缺少 Emoji字体请确保系统安装了Emoji字体：
+
+  ```sh
+  sudo apt install fonts-noto-color-emoji   # Debian / Ubuntu
+  sudo pacman -S noto-fonts-emoji           # Arch Linux
+  ```
 
 ## 支持
 

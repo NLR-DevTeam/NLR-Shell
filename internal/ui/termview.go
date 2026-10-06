@@ -166,6 +166,9 @@ func (v *TermView) shape(k glyphKey) (text.Glyph, bool) {
 		return gi.g, gi.ok
 	}
 	f := font.Font{Typeface: v.th.Mono}
+	if isEmojiRune(k.r) {
+		f.Typeface = v.th.Emoji
+	}
 	if k.bold {
 		f.Weight = font.Bold
 	}
@@ -826,8 +829,10 @@ func (v *TermView) Layout(gtx layout.Context) layout.Dimensions {
 			fill(gtx.Ops, r, c)
 			if under.R != 0 && under.R != ' ' {
 				v.glyphBuf = v.glyphBuf[:0]
-				v.appendGlyph(under, curX)
-				v.flushGlyphs(gtx, y, v.th.TermBg)
+				if !v.drawEmoji(gtx, under, curX, y, v.th.TermBg) {
+					v.appendGlyph(under, curX)
+					v.flushGlyphs(gtx, y, v.th.TermBg)
+				}
 			}
 		}
 	}
@@ -950,6 +955,17 @@ func (v *TermView) appendGlyph(c term.Cell, col int) {
 	v.glyphBuf = append(v.glyphBuf, g)
 }
 
+func (v *TermView) drawEmoji(gtx layout.Context, c term.Cell, col, y int, fg color.NRGBA) bool {
+	if c.Attr&term.AttrHidden != 0 {
+		return true
+	}
+	w := v.cellW
+	if c.Attr&term.AttrWide != 0 {
+		w *= 2
+	}
+	return v.th.emoji.draw(gtx.Ops, c.R, v.px, col*v.cellW, y+v.ascent, w, fg)
+}
+
 func (v *TermView) flushGlyphs(gtx layout.Context, y int, c color.NRGBA) {
 	gs := v.glyphBuf
 	if len(gs) == 0 {
@@ -1002,6 +1018,14 @@ func (v *TermView) drawRowText(gtx layout.Context, cells []term.Cell, y int, bg,
 			v.flushGlyphs(gtx, y, cur)
 		}
 		cur = cfg
+		if isEmojiRune(c.R) {
+			// Flush preceding text before painting a color glyph so both
+			// paths keep their position and ordering within the row.
+			v.flushGlyphs(gtx, y, cur)
+			if v.drawEmoji(gtx, c, i, y, cfg) {
+				continue
+			}
+		}
 		v.appendGlyph(c, i)
 	}
 	v.flushGlyphs(gtx, y, cur)

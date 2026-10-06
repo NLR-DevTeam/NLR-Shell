@@ -34,8 +34,10 @@ const (
 	// font; cjkFallbacks follow the chosen Chinese font. Go Mono ships with
 	// the program, so Latin text always has a monospace font before any CJK
 	// (proportional) font is reached.
-	monoFallbacks = "Cascadia Mono, Consolas, Go Mono"
-	cjkFallbacks  = "Microsoft YaHei UI, SimSun, monospace"
+	monoFallbacks  = "Cascadia Mono, Consolas, Go Mono"
+	cjkFallbacks   = "Microsoft YaHei UI, SimSun, monospace"
+	defaultEmoji   = "Segoe UI Emoji"
+	emojiFallbacks = "Segoe UI Emoji, Segoe UI Symbol"
 )
 
 // shellOpen opens a file with its default application, falling back to the

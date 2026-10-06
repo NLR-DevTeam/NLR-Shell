@@ -22,6 +22,8 @@ const defaultFont = "Noto Sans Mono"
 // fallback for characters the Western font lacks.
 const defaultCJKFont = "Noto Sans CJK SC"
 
+const defaultEmojiFont = "Noto Color Emoji"
+
 // defaultDownloadDir returns the directory downloads go to. It follows the
 // XDG_DOWNLOAD_DIR entry of user-dirs.dirs, which desktop environments
 // localize (for example to ~/下载), and falls back to ~/Downloads.

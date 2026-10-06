@@ -21,8 +21,10 @@ const (
 	// font; cjkFallbacks follow the chosen Chinese font. Go Mono ships with
 	// the program, so Latin text always has a monospace font before any CJK
 	// (proportional) font is reached.
-	monoFallbacks = "Noto Sans Mono, DejaVu Sans Mono, Go Mono"
-	cjkFallbacks  = "Noto Sans CJK SC, Source Han Sans SC, WenQuanYi Micro Hei, monospace"
+	monoFallbacks  = "Noto Sans Mono, DejaVu Sans Mono, Go Mono"
+	cjkFallbacks   = "Noto Sans CJK SC, Source Han Sans SC, WenQuanYi Micro Hei, monospace"
+	emojiFallbacks = "Noto Color Emoji, Noto Emoji, Symbola, emoji"
+	defaultEmoji   = "Noto Color Emoji"
 )
 
 // shellOpen opens a file with its default application.

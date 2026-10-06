@@ -117,9 +117,11 @@ type Snippet struct {
 // Settings are user preferences and remembered layout.
 type Settings struct {
 	// FontFamily is the Western (terminal) font; CJKFont is the Chinese
-	// font, used for the UI and as the terminal fallback.
+	// font, used for the UI and as the terminal fallback. EmojiFont is
+	// preferred for emoji in the terminal.
 	FontFamily   string  `json:"fontFamily"`
 	CJKFont      string  `json:"cjkFont"`
+	EmojiFont    string  `json:"emojiFont"`
 	FontSize     float32 `json:"fontSize"`
 	Scrollback   int     `json:"scrollback"`
 	SidebarWidth int     `json:"sidebarWidth"`
@@ -183,6 +185,7 @@ func DefaultSettings() Settings {
 	return Settings{
 		FontFamily:      defaultFont,
 		CJKFont:         defaultCJKFont,
+		EmojiFont:       defaultEmojiFont,
 		FontSize:        14,
 		Scrollback:      10000,
 		SidebarWidth:    264,
@@ -263,6 +266,9 @@ func Open(dir string) *Store {
 	}
 	if st.FontFamily == "" {
 		st.FontFamily = def.FontFamily
+	}
+	if st.EmojiFont == "" {
+		st.EmojiFont = def.EmojiFont
 	}
 	if st.Scrollback <= 0 {
 		st.Scrollback = def.Scrollback

@@ -752,7 +752,7 @@ type settingsDialog struct {
 	a *App
 
 	fontSize, scrollback, interval, downloadDir Field
-	fontFamily, cjkFont                         fontCombo
+	fontFamily, cjkFont, emojiFont              fontCombo
 	copySel, commandBar, follow, hidden         widget.Bool
 	closeOnExit, recentOrder                    widget.Bool
 	confirmExit, animations                     widget.Bool
@@ -813,6 +813,7 @@ func newSettingsDialog(a *App) *settingsDialog {
 	d := &settingsDialog{a: a}
 	d.fontFamily.Label = "西文字体"
 	d.cjkFont.Label = "中文字体"
+	d.emojiFont.Label = "Emoji 字体"
 	d.fontSize.Label = "字号"
 	d.scrollback.Label = "回滚行数"
 	d.interval.Label = "监控间隔（秒）"
@@ -822,6 +823,7 @@ func newSettingsDialog(a *App) *settingsDialog {
 	}
 	d.fontFamily.SetText(s.FontFamily)
 	d.cjkFont.SetText(s.CJKFont)
+	d.emojiFont.SetText(s.EmojiFont)
 	d.fontSize.SetText(strconv.Itoa(int(s.FontSize)))
 	d.scrollback.SetText(strconv.Itoa(s.Scrollback))
 	d.interval.SetText(strconv.Itoa(s.MonitorInterval))
@@ -853,6 +855,10 @@ func (d *settingsDialog) Submit(a *App) {
 	}
 	family := strings.TrimSpace(d.fontFamily.Text())
 	cjk := strings.TrimSpace(d.cjkFont.Text())
+	emoji := strings.TrimSpace(d.emojiFont.Text())
+	if emoji == "" {
+		emoji = store.DefaultSettings().EmojiFont
+	}
 	if cjk == "" {
 		cjk = store.DefaultSettings().CJKFont
 	}
@@ -861,6 +867,7 @@ func (d *settingsDialog) Submit(a *App) {
 	}
 	a.updateSettings(func(s *store.Settings) {
 		s.FontFamily, s.CJKFont, s.FontSize, s.Scrollback, s.MonitorInterval = family, cjk, float32(size), sb, iv
+		s.EmojiFont = emoji
 		if dir := strings.TrimSpace(d.downloadDir.Text()); dir != "" {
 			s.DownloadDir = dir
 		}
@@ -873,7 +880,7 @@ func (d *settingsDialog) Submit(a *App) {
 	a.st.SetManualOrder(!d.recentOrder.Value)
 	a.home.refresh()
 	a.loadBackground()
-	a.th.SetFonts(family, cjk)
+	a.th.SetFonts(family, cjk, emoji)
 	for _, t := range a.sessionViews() {
 		t.sess.Term.SetScrollback(sb)
 		t.sess.SetMonitorInterval(time.Duration(iv) * time.Second)
@@ -953,7 +960,7 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			sel(1, &d.accentClk, "主题颜色", choiceLabel(accentChoices, d.accent))),
 		row(sel(1, &d.bgPickClk, "背景图片", bgName), hspace(8), btn(&d.bgClearClk, "清除")),
 		row(combo(2, &d.fontFamily), hspace(10), combo(2, &d.cjkFont), hspace(10), fld(1, &d.fontSize)),
-		row(fld(1, &d.scrollback), hspace(10), fld(1, &d.interval)),
+		row(combo(2, &d.emojiFont), hspace(10), fld(1, &d.scrollback), hspace(10), fld(1, &d.interval)),
 		row(sel(1, &d.rightClickClk, "终端右键", choiceLabel(rightClickChoices, d.rightClick))),
 		row(fld(1, &d.downloadDir), hspace(8), btn(&d.browseClk, "浏览…")),
 		vspaceW(4),
