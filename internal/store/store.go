@@ -148,6 +148,10 @@ type Settings struct {
 	Accent     string `json:"accent"`
 	// PickerDir is the local directory the file picker was last used in.
 	PickerDir string `json:"pickerDir,omitempty"`
+	// PickerPlaces are the folders pinned in the file picker's side bar.
+	// Nil means the platform defaults; an empty list means the user
+	// unpinned them all.
+	PickerPlaces []string `json:"pickerPlaces"`
 	// Background is the path of an optional background image.
 	Background      string `json:"background,omitempty"`
 	DownloadDir     string `json:"downloadDir"`

@@ -74,6 +74,15 @@ type filePicker struct {
 	lastHit  int
 	lastTime time.Time
 
+	// Side bar: pinned folders and drives (see places.go).
+	known     []place  // special folders, for their names
+	defaults  []string // pinned folders when the user has not changed them
+	drives    []place
+	side      widget.List
+	sideTag   struct{}
+	sideHover int
+	sideDrag  sideDrag
+
 	done func([]string)
 }
 
@@ -110,6 +119,23 @@ func (a *App) PickerPath() string {
 	return ""
 }
 
+// PickerPlaces returns the names in the built-in file picker's side bar,
+// or nil when it is not open. It exists for cmd/shot.
+func (a *App) PickerPlaces() []string {
+	if n := len(a.dialogs); n > 0 {
+		if p, ok := a.dialogs[n-1].(*filePicker); ok {
+			var names []string
+			for _, it := range p.sideItems() {
+				if !it.sep {
+					names = append(names, it.name)
+				}
+			}
+			return names
+		}
+	}
+	return nil
+}
+
 // newFilePicker returns a picker dialog that reports the chosen paths
 // through done (called on the UI goroutine).
 func newFilePicker(a *App, title string, folders bool, done func([]string)) *filePicker {
@@ -118,7 +144,7 @@ func newFilePicker(a *App, title string, folders bool, done func([]string)) *fil
 	// ~/.ssh, ~/.config and friends, and the eye button hides them again.
 	d.hidden = true
 	d.sel = map[string]bool{}
-	d.cursor, d.anchor, d.hover, d.lastHit = -1, -1, -1, -1
+	d.cursor, d.anchor, d.hover, d.lastHit, d.sideHover = -1, -1, -1, -1, -1
 	return d
 }
 
@@ -280,10 +306,32 @@ func (d *filePicker) activate(i int) {
 	}
 }
 
+// rowMenu is the context menu of row i, or of the folder being shown when
+// i is -1: folders can be pinned to the side bar.
+func (d *filePicker) rowMenu(i int) {
+	if i < 0 || i >= len(d.entries) {
+		d.a.Menu(d.pinMenuItem(d.dir))
+		return
+	}
+	e := d.entries[i]
+	if !d.sel[e.name] {
+		d.selectRow(i, 0)
+	}
+	if !e.dir {
+		return
+	}
+	path := filepath.Join(d.dir, e.name)
+	d.a.Menu(
+		MenuItem{Label: "打开", Icon: icFolder, Do: func() { d.load(path) }},
+		d.pinMenuItem(path),
+	)
+}
+
 func (d *filePicker) events(gtx layout.Context) {
 	a := d.a
 	if !d.loaded {
 		d.loaded = true
+		d.initPlaces()
 		d.load(d.start())
 		// The list takes the keyboard first; clicking the path field moves
 		// the focus to its editor from there.
@@ -394,7 +442,7 @@ func (d *filePicker) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if d.folders {
 		ok = "选择此文件夹"
 	}
-	return a.dialogFrame(gtx, d.title, 660, &d.closeClk, d,
+	return a.dialogFrame(gtx, d.title, 820, &d.closeClk, d,
 		func(gtx layout.Context) layout.Dimensions {
 			// dialogFrame allows the body to grow to the window height; a
 			// file list does not need that much room.
@@ -403,7 +451,16 @@ func (d *filePicker) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(d.toolbar),
 				vspace(8),
-				layout.Flexed(1, d.listArea),
+				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					return layout.Flex{}.Layout(gtx,
+						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+							gtx.Constraints = layout.Exact(image.Pt(min(gtx.Dp(176), gtx.Constraints.Max.X/3), gtx.Constraints.Max.Y))
+							return d.sidebar(gtx)
+						}),
+						hspace(6),
+						layout.Flexed(1, d.listArea),
+					)
+				}),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					if d.errMsg == "" {
 						return layout.Dimensions{}
@@ -476,6 +533,10 @@ func (d *filePicker) listArea(gtx layout.Context) layout.Dimensions {
 			d.hover = idx
 		case pointer.Press:
 			gtx.Execute(key.FocusCmd{Tag: d})
+			if pe.Buttons.Contain(pointer.ButtonSecondary) {
+				d.rowMenu(idx)
+				break
+			}
 			if !pe.Buttons.Contain(pointer.ButtonPrimary) {
 				break
 			}

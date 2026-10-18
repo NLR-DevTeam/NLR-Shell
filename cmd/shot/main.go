@@ -277,6 +277,11 @@ func main() {
 		os.Setenv("USERPROFILE", home)
 		os.MkdirAll(filepath.Join(home, "docs"), 0o755)
 		os.MkdirAll(filepath.Join(home, ".ssh"), 0o700)
+		// The picker pins these by default (Windows resolves its known
+		// folders through USERPROFILE too).
+		for _, n := range []string{"Desktop", "Downloads", "Documents"} {
+			os.MkdirAll(filepath.Join(home, n), 0o755)
+		}
 		os.WriteFile(filepath.Join(home, "notes.txt"), []byte("hello\n"), 0o644)
 		os.WriteFile(filepath.Join(home, "backup.tar.gz"), []byte("data"), 0o644)
 	}

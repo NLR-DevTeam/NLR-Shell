@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"image"
+	"slices"
 
 	"gioui.org/font"
 	"gioui.org/layout"
@@ -18,6 +19,18 @@ func (fv *filesView) tasks(gtx layout.Context) layout.Dimensions {
 	size := gtx.Constraints.Max
 	fill(gtx.Ops, image.Rect(0, 0, max(gtx.Dp(1), 1), size.Y), th.Border)
 	list := fv.sv.sess.Transfers.List()
+	// Unfinished transfers stay above finished ones: running, then queued,
+	// each newest first as listed.
+	rank := func(s sshx.TransferState) int {
+		switch s {
+		case sshx.TransferRunning:
+			return 0
+		case sshx.TransferQueued:
+			return 1
+		}
+		return 2
+	}
+	slices.SortStableFunc(list, func(x, y sshx.TransferInfo) int { return rank(x.State) - rank(y.State) })
 
 	seen := map[int]bool{}
 	for _, ti := range list {

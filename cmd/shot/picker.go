@@ -58,6 +58,36 @@ func (d *driver) pickerShot(want func(string) bool) {
 	if names := d.a.PickerEntries(); !slices.Contains(names, ".ssh") {
 		fail("hidden entries not listed: %v", names)
 	}
+	// The side bar pins the desktop, downloads and documents folders by
+	// default; dragging one reorders them, clicking one goes there. Its
+	// rows line up with the file list's, 30dp tall, and start 102dp below
+	// the dialog's top edge.
+	sideX := (float32(d.size.X)-d.px(820))/2 + d.px(100)
+	sideY := func(i int) float32 { return top + d.px(float32(102+30*i)) }
+	first := slices.Index(d.a.PickerPlaces(), "桌面")
+	if first < 0 || !slices.Contains(d.a.PickerPlaces(), "下载") || !slices.Contains(d.a.PickerPlaces(), "文档") {
+		fail("default places missing: %v", d.a.PickerPlaces())
+	}
+	before := slices.Clone(d.a.PickerPlaces())
+	d.drag(sideX, sideY(first), sideX, sideY(first+2)-d.px(4))
+	d.until("drag pin", func() bool { return d.a.PickerPlaces()[first+1] == "桌面" })
+	if got := d.a.PickerPlaces(); got[first] != before[first+1] {
+		fail("pin drag: %v -> %v", before, got)
+	}
+	d.click(sideX, sideY(first+1), pointer.ButtonPrimary)
+	d.until("open pinned desktop", func() bool { return filepath.Base(d.a.PickerPath()) == "Desktop" })
+	d.key(key.NameDeleteBackward, 0)
+	d.until("leave desktop", func() bool { return d.a.PickerPath() == home })
+	d.click(sideX, sideY(first+1), pointer.ButtonSecondary)
+	d.until("place menu", d.a.MenuOpen)
+	if want("picker-menu") {
+		d.shot("picker-menu")
+	}
+	d.key(key.NameEscape, 0)
+	d.until("place menu closed", func() bool { return !d.a.MenuOpen() })
+	if d.a.DialogCount() != 1 {
+		fail("escape closed the picker with its menu")
+	}
 	// The path field is editable: type a path and press Enter to go there.
 	fieldY := top + d.px(62)
 	// The path field spans the middle of the dialog, so the window centre
