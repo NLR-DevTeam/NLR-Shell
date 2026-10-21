@@ -36,6 +36,45 @@ NLRShell -connect [user@]host[:port] [-identity 私钥文件] [-password 密码]
 - 该模式专为免交互设计：会自动接受并信任主机密钥
 - 如果缺少认证凭据，命令将直接退出并报错
 
+## MCP
+
+NLR Shell 内置 [Model Context Protocol](https://modelcontextprotocol.io) 服务，可以让 Claude Code、Cursor 等 AI 助手通过一个本机 URL 使用你在 NLR Shell 中保存的服务器。
+
+点击左上角 LOGO → **MCP 服务**：
+
+- 打开「启用 MCP 服务」并保存，NLR Shell 运行期间会在 `http://127.0.0.1:14559/mcp` 提供服务（端口可修改）
+- 顶部显示服务状态和地址，可以一键复制地址或重启服务
+- 可以开启只读模式（不允许执行命令、写入和上传文件），设置是否自动信任首次连接的主机密钥，并选择 AI 可以访问的服务器（全部，或仅选中的服务器）
+
+设置保存后立即生效，已连接的 AI 助手无需重启。
+
+接入方式：在 AI 工具中添加 **Streamable HTTP**（有的工具叫「HTTP」）类型的 MCP 服务器，填入上面的地址。例如 Claude Code：
+
+```sh
+claude mcp add --transport http nlrshell http://127.0.0.1:14559/mcp
+```
+
+提供的工具：
+
+| 工具 | 说明 |
+| --- | --- |
+| `list_servers` | 列出已保存的服务器（id、名称、分组、地址） |
+| `run_command` | 执行命令，返回退出码、stdout、stderr（支持 `cwd`、`stdin`、超时） |
+| `list_directory` | 列出远程目录 |
+| `read_file` / `write_file` | 读取 / 写入（或追加）远程文本文件 |
+| `upload_file` / `download_file` | 在本机与服务器之间传输文件 |
+| `system_status` | 获取 CPU、内存、负载、网络、磁盘、进程等状态（同监控面板） |
+
+说明：
+
+- 服务只监听 `127.0.0.1`，其他电脑无法访问；需要 NLR Shell 保持运行。claude.ai 网页版等云端连接器无法访问本机地址。
+- 为防止浏览器中的网页调用本机服务，服务只接受 `application/json` 请求，并拒绝来自其他网站（Origin）或其他主机名（Host）的请求。
+- AI 只能使用已保存的连接，通过服务器 id 或名称指定；密码和私钥始终留在 NLR Shell 中，不会发送给 AI。
+- 需要先在 NLR Shell 中连接一次并勾选「记住密码」（或保存私钥口令）；需要交互输入的认证方式无法通过 MCP 使用。
+- 主机密钥发生变化时总是拒绝连接，请回到 NLR Shell 中确认。
+- 连接在多次调用间复用，空闲 10 分钟后自动断开。
+- `run_command` 以非交互方式（无 TTY）执行命令。AI 可以在允许的服务器上执行任意命令，请只接入你信任的 AI 工具，或开启只读模式。
+
 ## 源码构建
 
 ### Windows

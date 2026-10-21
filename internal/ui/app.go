@@ -21,6 +21,7 @@ import (
 	"gioui.org/unit"
 	"gioui.org/widget"
 
+	"nlrshell/internal/mcp"
 	"nlrshell/internal/store"
 )
 
@@ -51,6 +52,8 @@ type App struct {
 	active int // index into tabs, or -1 for the home page
 	ext    external
 	bg     background
+	// mcp serves the saved connections to AI assistants (see mcpdialog.go).
+	mcp *mcp.Service
 	// activeID mirrors the active session id for use from other goroutines.
 	activeID atomic.Value
 
@@ -109,6 +112,12 @@ func New(host Host, st *store.Store) *App {
 	a.loadBackground()
 	go a.watchSystemTheme()
 	a.home = newHomeView(a)
+	a.mcp = mcp.NewService(mcp.Options{Version: Version, Store: st})
+	if set.MCP.Enabled {
+		if err := a.mcp.Start(set.MCP.Port); err != nil {
+			a.Toast(toastError, "MCP 服务启动失败："+err.Error())
+		}
+	}
 	return a
 }
 
@@ -182,6 +191,7 @@ func (a *App) Flush() {
 // Shutdown closes all sessions and saves state.
 func (a *App) Shutdown() {
 	a.Flush()
+	a.mcp.Stop()
 	for _, t := range a.sessionViews() {
 		t.sess.Close()
 	}
@@ -866,6 +876,7 @@ func (a *App) appMenu() {
 		MenuItem{Label: "主页", Icon: icHome, Hint: "Ctrl+Shift+T", Do: func() { a.activate(-1) }},
 		MenuItem{Sep: true},
 		MenuItem{Label: "设置", Icon: icSettings, Do: func() { a.Open(newSettingsDialog(a)) }},
+		MenuItem{Label: "MCP 服务", Icon: icMCP, Do: func() { a.Open(newMCPDialog(a)) }},
 		MenuItem{Label: "关于", Icon: icInfo, Do: func() { a.Open(&aboutDialog{}) }},
 		MenuItem{Sep: true},
 		MenuItem{Label: "退出", Icon: icPower, Do: a.quit},
@@ -873,7 +884,7 @@ func (a *App) appMenu() {
 }
 
 // Version is the application version shown in the about box.
-var Version = "1.2.2"
+var Version = "1.3.0"
 
 // dp converts dp to pixels using the metric of the last frame.
 func (a *App) dp(v unit.Dp) int {

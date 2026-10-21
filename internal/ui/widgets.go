@@ -381,6 +381,13 @@ const textMiddle = 0.365
 
 // checkbox draws a labeled check box bound to b.
 func (th *Theme) checkbox(gtx layout.Context, b *widget.Bool, label string) layout.Dimensions {
+	return th.checkboxW(gtx, b, func(gtx layout.Context) layout.Dimensions {
+		return th.txt(gtx, label, 13, th.Text)
+	})
+}
+
+// checkboxW is a checkbox with any widget as its label.
+func (th *Theme) checkboxW(gtx layout.Context, b *widget.Bool, label layout.Widget) layout.Dimensions {
 	return b.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
@@ -403,10 +410,34 @@ func (th *Theme) checkbox(gtx layout.Context, b *widget.Bool, label string) layo
 				return layout.Dimensions{Size: r.Max}
 			}),
 			hspace(8),
-			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return th.txt(gtx, label, 13, th.Text)
-			}),
+			layout.Rigid(label),
 		)
+	})
+}
+
+// toggle draws an on/off switch for b.
+func (th *Theme) toggle(gtx layout.Context, b *widget.Bool) layout.Dimensions {
+	return b.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+		w, h, pad := gtx.Dp(38), gtx.Dp(22), gtx.Dp(3)
+		r := image.Rectangle{Max: image.Pt(w, h)}
+		knob, x := th.Text3, pad
+		if b.Value {
+			fillRR(gtx.Ops, r, h/2, th.Accent)
+			knob, x = th.AccentFg, w-h+pad
+		} else {
+			fillRR(gtx.Ops, r, h/2, th.Bg0)
+			c := th.BorderHi
+			if b.Hovered() {
+				c = th.Text3
+			}
+			strokeRR(gtx.Ops, r, h/2, float32(gtx.Dp(1)), c)
+		}
+		d := h - 2*pad
+		fillRR(gtx.Ops, image.Rect(x, pad, x+d, pad+d), d/2, knob)
+		a := clip.Rect(r).Push(gtx.Ops)
+		pointer.CursorPointer.Add(gtx.Ops)
+		a.Pop()
+		return layout.Dimensions{Size: r.Max}
 	})
 }
 

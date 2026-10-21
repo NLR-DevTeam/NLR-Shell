@@ -52,6 +52,15 @@ func (a *App) OpenTunnels() {
 // OpenSettings opens the settings dialog.
 func (a *App) OpenSettings() { a.Open(newSettingsDialog(a)) }
 
+// OpenMCP opens the MCP service dialog.
+func (a *App) OpenMCP() { a.Open(newMCPDialog(a)) }
+
+// MCPState reports whether the MCP service runs and its URL.
+func (a *App) MCPState() (running bool, url string) {
+	running, url, _ = a.mcp.State()
+	return running, url
+}
+
 // ShowTasks opens or closes the task list of the active tab's file panel.
 func (a *App) ShowTasks(on bool) {
 	if sv := a.current(); sv != nil {

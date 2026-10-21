@@ -81,6 +81,7 @@ var (
 	icTasks     = mustIcon(icons.ActionAssignment)
 	icUser      = mustIcon(icons.SocialPerson)
 	icSweep     = mustIcon(icons.ContentDeleteSweep)
+	icMCP       = mustIcon(icons.ActionExtension)
 )
 
 // drawLogo paints the "N>" mark inside a square of the given size.

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -159,6 +160,30 @@ type Settings struct {
 	WindowWidth     int    `json:"windowWidth"`
 	WindowHeight    int    `json:"windowHeight"`
 	Maximized       bool   `json:"maximized"`
+	// MCP controls the -mcp server, which reads it on every request.
+	MCP MCPSettings `json:"mcp"`
+}
+
+// MCPSettings controls what AI assistants may do through the -mcp server.
+type MCPSettings struct {
+	// Enabled runs the MCP server on http://127.0.0.1:Port/mcp while the
+	// app is open.
+	Enabled bool `json:"enabled"`
+	Port    int  `json:"port"`
+	// ReadOnly withholds the tools that change remote hosts.
+	ReadOnly bool `json:"readOnly"`
+	// TrustNewHosts accepts the key of a host seen for the first time.
+	// A changed key is refused either way.
+	TrustNewHosts bool `json:"trustNewHosts"`
+	// AllServers opens every saved connection; otherwise only the
+	// profiles listed in Servers (by ID) can be used.
+	AllServers bool     `json:"allServers"`
+	Servers    []string `json:"servers,omitempty"`
+}
+
+// Allows reports whether the MCP server may use profile id.
+func (m *MCPSettings) Allows(id string) bool {
+	return m.AllServers || slices.Contains(m.Servers, id)
 }
 
 // Right-click behavior in the terminal.
@@ -206,6 +231,7 @@ func DefaultSettings() Settings {
 		Accent:          AccentGreen,
 		WindowWidth:     1280,
 		WindowHeight:    800,
+		MCP:             MCPSettings{Port: 14559, TrustNewHosts: true, AllServers: true},
 	}
 }
 
@@ -288,6 +314,9 @@ func Open(dir string) *Store {
 	}
 	if st.FilesHeight < 80 {
 		st.FilesHeight = def.FilesHeight
+	}
+	if st.MCP.Port < 1 || st.MCP.Port > 65535 {
+		st.MCP.Port = def.MCP.Port
 	}
 	if st.DownloadDir == "" {
 		if home, err := os.UserHomeDir(); err == nil {

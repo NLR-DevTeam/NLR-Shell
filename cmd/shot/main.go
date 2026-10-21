@@ -4,11 +4,14 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"image"
 	"image/png"
 	"io"
+	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -66,6 +69,26 @@ type driver struct {
 	start  time.Time
 	// clipboard answers clipboard reads the way the window systems do.
 	clipboard string
+}
+
+// mcpCall calls list_servers on the MCP service at url and returns the
+// tool's text, or the error.
+func mcpCall(url string) string {
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_servers","arguments":{}}}`
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		return err.Error()
+	}
+	defer resp.Body.Close()
+	var r struct {
+		Result struct {
+			Content []struct{ Text string }
+		}
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil || len(r.Result.Content) == 0 {
+		return fmt.Sprintf("status %d: %v", resp.StatusCode, err)
+	}
+	return r.Result.Content[0].Text
 }
 
 // fail prints a diagnostic and stops the renderer.
@@ -289,6 +312,14 @@ func main() {
 	// Animations are off unless asked for: a screenshot must not catch a
 	// fade half way.
 	st.UpdateSettings(func(s *store.Settings) { s.DownloadDir, s.Animations = filepath.Join(dir, "dl"), *anim })
+	// The MCP dialog lists the chosen servers, which makes it fill the
+	// window, so its rows sit at fixed places; its service gets a free port.
+	mcpPort := 0
+	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
+		mcpPort = ln.Addr().(*net.TCPAddr).Port
+		ln.Close()
+	}
+	st.UpdateSettings(func(s *store.Settings) { s.MCP.Port, s.MCP.AllServers = mcpPort, false })
 	now := time.Now().Unix()
 	demo := st.SaveProfile(store.Profile{Name: "nlr-demo", Group: "生产环境", Host: "127.0.0.1", Port: srv.Port(), User: "demo", LastUsed: now - 120})
 	st.SaveProfile(store.Profile{Name: "web-01", Group: "生产环境", Host: "10.0.0.11", User: "root", Auth: store.AuthKey, KeyPath: `~\.ssh\id_ed25519`, LastUsed: now - 3600*5})
@@ -510,6 +541,44 @@ func main() {
 		d.shot("settings")
 		d.settingsPickerShot(want)
 		d.key(key.NameEscape, 0)
+	}
+	if want("app-menu") {
+		d.click(d.px(20), d.px(20), pointer.ButtonPrimary)
+		d.run(100 * time.Millisecond)
+		d.shot("app-menu")
+		d.key(key.NameEscape, 0)
+	}
+	if want("mcp") {
+		a.OpenMCP()
+		d.run(100 * time.Millisecond)
+		d.shot("mcp")
+		d.click(d.px(886), d.px(172), pointer.ButtonPrimary) // 启用 MCP 服务
+		d.click(d.px(372), d.px(415), pointer.ButtonPrimary) // first server
+		d.key(key.NameReturn, 0)                             // 保存
+		d.run(100 * time.Millisecond)
+		running, mcpURL := a.MCPState()
+		if !running || mcpURL != fmt.Sprintf("http://127.0.0.1:%d/mcp", mcpPort) || a.DialogCount() != 0 {
+			fail("saving the MCP dialog did not start the service: %v %q", running, mcpURL)
+		}
+		// The service answers MCP requests, for the chosen server only. The
+		// dialog lists the servers in the order of the home page.
+		if text := mcpCall(mcpURL); !strings.Contains(text, st.Profiles()[0].ID) || strings.Count(text, `"id"`) != 1 {
+			fail("list_servers through the MCP service: %s", text)
+		}
+		a.OpenMCP()
+		d.run(100 * time.Millisecond)
+		d.shot("mcp-running")
+		d.click(d.px(867), d.px(100), pointer.ButtonPrimary) // 重启服务
+		d.run(100 * time.Millisecond)
+		if running, _ := a.MCPState(); !running {
+			fail("restarting the MCP service stopped it")
+		}
+		d.click(d.px(886), d.px(172), pointer.ButtonPrimary) // 启用 MCP 服务
+		d.key(key.NameReturn, 0)                             // 保存
+		d.run(100 * time.Millisecond)
+		if running, _ := a.MCPState(); running || st.Settings().MCP.Enabled {
+			fail("turning the MCP service off did not stop it")
+		}
 	}
 	if want("drag-file") {
 		// Drag go.mod (second row) onto src (first row): it must move there.
