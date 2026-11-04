@@ -149,7 +149,18 @@ func (s *Session) Reconnect() {
 		s.Profile = p
 	}
 	s.q = newQueue()
-	s.Term.Write([]byte("\r\n\x1b[0m\x1b[?25h\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?2004l"))
+	// Undo the modes the old shell left on. Leaving the alternate screen
+	// also restores the saved cursor, which outside it is the top left
+	// corner: the new output would overwrite the old, so that is only done
+	// when a full-screen program was running.
+	s.Term.Lock()
+	alt := s.Term.AltScreen()
+	s.Term.Unlock()
+	reset := "\r\n\x1b[0m\x1b[?25h\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?2004l"
+	if alt {
+		reset = "\x1b[?1049l" + reset
+	}
+	s.Term.Write([]byte(reset))
 	s.Start()
 }
 

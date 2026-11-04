@@ -165,8 +165,18 @@ func TestConnectShellAndPasswordSave(t *testing.T) {
 		t.Fatalf("exit code = %d, ok = %v; want 0, true", code, ok)
 	}
 
-	// Reconnect works on the same session object.
+	// Reconnect works on the same session object, and the new shell's
+	// output starts below the old one instead of over it from the top.
+	s.Term.Lock()
+	_, y0, _, _, _ := s.Term.Cursor()
+	s.Term.Unlock()
 	s.Reconnect()
+	s.Term.Lock()
+	_, y1, _, _, _ := s.Term.Cursor()
+	s.Term.Unlock()
+	if y0 > 0 && y1 < y0 {
+		t.Fatalf("reconnect moved the cursor up from row %d to %d", y0, y1)
+	}
 	waitFor(t, "reconnect", func() bool { return s.State() == sshx.StateConnected })
 	if code, ok := s.ExitCode(); ok {
 		t.Fatalf("exit code %d survived the reconnect", code)
