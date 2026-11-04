@@ -162,6 +162,9 @@ type Settings struct {
 	Maximized       bool   `json:"maximized"`
 	// MCP controls the -mcp server, which reads it on every request.
 	MCP MCPSettings `json:"mcp"`
+	// KeepAlive keeps sessions connected while the Android app is in the
+	// background, through a foreground service and its notification.
+	KeepAlive bool `json:"keepAlive"`
 }
 
 // MCPSettings controls what AI assistants may do through the -mcp server.
@@ -232,6 +235,7 @@ func DefaultSettings() Settings {
 		WindowWidth:     1280,
 		WindowHeight:    800,
 		MCP:             MCPSettings{Port: 14559, TrustNewHosts: true, AllServers: true},
+		KeepAlive:       true,
 	}
 }
 

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+	<!-- The window background matches the app's dark theme, so the first
+	     frame does not flash white. Gio sets the bar colors at run time. -->
+	<style name="Theme.NLRShell" parent="android:style/Theme.Material.NoActionBar">
+		<item name="android:windowBackground">@color/background</item>
+		<item name="android:windowDrawsSystemBarBackgrounds">true</item>
+		<item name="android:statusBarColor">@color/background</item>
+		<item name="android:navigationBarColor">@color/background</item>
+	</style>
+	<color name="background">#FF0B0D10</color>
+</resources>

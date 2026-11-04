@@ -47,10 +47,14 @@ type sessionView struct {
 	// next frame because they need a layout context.
 	pending []string
 	cmd     *commandBar
+	// pane is what the compact layout shows (paneTerminal, ...); keys is
+	// the bar of terminal keys in mobile mode.
+	pane int
+	keys extraKeys
 }
 
 func newSessionView(a *App, p store.Profile) *sessionView {
-	sv := &sessionView{a: a}
+	sv := &sessionView{a: a, keys: extraKeys{held: -1}}
 	sv.sess = sshx.NewSession(p, a.st, &prompter{a: a, title: p.Title()}, a.host.Invalidate)
 	sv.term = NewTermView(a.th, sv.sess.Term)
 	sv.term.Send = func(b []byte) {
@@ -76,6 +80,9 @@ func newSessionView(a *App, p store.Profile) *sessionView {
 	sv.files = newFilesView(sv)
 	sv.cmd = newCommandBar(sv)
 	sv.term.OnConfirmPaste = sv.confirmPaste
+	// A phone shows its keyboard when the terminal is tapped, not whenever
+	// the terminal gets the focus.
+	sv.term.AutoKeyboard = !a.mobile
 	sv.sess.Transfers.OnDone = func(ti sshx.TransferInfo) {
 		a.Post(func() {
 			// Downloads made for "open with local app" are not announced.
@@ -205,8 +212,12 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 		}
 	}
 
+	compact := a.compact()
+	if !compact {
+		sv.pane = paneTerminal
+	}
 	// Keep keyboard focus on the terminal unless another input owns it.
-	if a.menu == nil && len(a.dialogs) == 0 && !sv.term.Focused() && !sv.files.wantsFocus(gtx) && !gtx.Focused(&sv.cmd.field.Editor) {
+	if a.menu == nil && len(a.dialogs) == 0 && sv.pane == paneTerminal && !sv.term.Focused() && !sv.files.wantsFocus(gtx) && !gtx.Focused(&sv.cmd.field.Editor) {
 		sv.term.Focus(gtx)
 	}
 
@@ -220,6 +231,37 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 		var d layout.Dimensions
 		faded(gtx, p, image.Point{}, func() { d = w(gtx) })
 		return d
+	}
+
+	// terminal is the terminal with the command bar and, in mobile mode,
+	// the keys the soft keyboard lacks.
+	terminal := func(gtx layout.Context) layout.Dimensions {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				d := sv.layoutTerminal(gtx, state, status, err)
+				sv.cmd.layoutQuick(gtx)
+				return d
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return section(gtx, &a.cmdFade, set.CommandBar, sv.cmd.Layout)
+			}),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				if !a.mobile {
+					return layout.Dimensions{}
+				}
+				return sv.keys.Layout(gtx, sv)
+			}),
+		)
+	}
+	if compact {
+		// One pane at a time.
+		switch sv.pane {
+		case paneMonitor:
+			return sv.mon.Layout(gtx)
+		case paneFiles:
+			return sv.files.Layout(gtx)
+		}
+		return terminal(gtx)
 	}
 
 	return layout.Flex{}.Layout(gtx,
@@ -246,18 +288,7 @@ func (sv *sessionView) Layout(gtx layout.Context) layout.Dimensions {
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			total := gtx.Constraints.Max.Y
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-							d := sv.layoutTerminal(gtx, state, status, err)
-							sv.cmd.layoutQuick(gtx)
-							return d
-						}),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return section(gtx, &a.cmdFade, set.CommandBar, sv.cmd.Layout)
-						}),
-					)
-				}),
+				layout.Flexed(1, terminal),
 				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 					return section(gtx, &a.filesFade, set.ShowFiles, func(gtx layout.Context) layout.Dimensions {
 						h := set.FilesHeight

@@ -84,6 +84,13 @@ type TermView struct {
 	OnConfirmPaste func(text string, send func())
 	// confirmPaste marks a clipboard read started by such a right click.
 	confirmPaste bool
+	// AutoKeyboard shows the soft keyboard whenever the terminal gets the
+	// focus; without it, only a tap shows it (see termtouch.go).
+	AutoKeyboard bool
+	// Sticky are modifiers latched by the on-screen Ctrl and Alt keys; they
+	// apply to the next key typed.
+	Sticky key.Modifiers
+	touch  termTouch
 
 	// Font metrics in pixels for the current size.
 	px      int
@@ -133,7 +140,7 @@ type TermView struct {
 
 // NewTermView creates a view for t.
 func NewTermView(th *Theme, t *term.Terminal) *TermView {
-	return &TermView{th: th, term: t, follow: true, FontSize: 14, compose: key.Range{Start: -1, End: -1}, mouseBtn: -1}
+	return &TermView{th: th, term: t, follow: true, FontSize: 14, compose: key.Range{Start: -1, End: -1}, mouseBtn: -1, AutoKeyboard: true}
 }
 
 // Focus requests keyboard focus for the terminal.
@@ -468,7 +475,9 @@ func (v *TermView) update(gtx layout.Context, top int) {
 				v.focused = e.Focus
 				// Enable the input method while the terminal has the
 				// keyboard; Gio's editor widgets do the same.
-				gtx.Execute(key.SoftKeyboardCmd{Show: e.Focus})
+				if !e.Focus || v.AutoKeyboard {
+					gtx.Execute(key.SoftKeyboardCmd{Show: e.Focus})
+				}
 				v.blinkStart = gtx.Now
 				if v.Send != nil {
 					if b := v.term.EncodeFocus(e.Focus); b != nil {
@@ -514,9 +523,16 @@ func (v *TermView) update(gtx layout.Context, top int) {
 	// Text that is not part of an active composition goes to the remote.
 	if len(v.ime) > 0 && (v.compose.Start < 0 || v.compose.Start == v.compose.End) {
 		v.sel = false
-		v.send([]byte(string(v.ime)))
+		if v.Sticky != 0 && len(v.ime) == 1 && v.ime[0] < 0x80 {
+			// A character typed after the on-screen Ctrl or Alt key.
+			v.TypeKey(gtx, key.Name(strings.ToUpper(string(v.ime))))
+		} else {
+			v.Sticky = 0
+			v.send([]byte(string(v.ime)))
+		}
 		v.ime, v.imeCaret = v.ime[:0], 0
 	}
+	v.touchTick(gtx, top)
 }
 
 func (v *TermView) pointer(gtx layout.Context, e pointer.Event, top int, mode term.MouseMode) {
@@ -524,6 +540,11 @@ func (v *TermView) pointer(gtx layout.Context, e pointer.Event, top int, mode te
 	shift := e.Modifiers.Contain(key.ModShift)
 	report := mode != term.MouseOff && !shift
 	cx, cy := v.cellAt(e.Position)
+	// A cancel names no source; it ends a touch in progress.
+	if e.Source == pointer.Touch || e.Kind == pointer.Cancel && v.touch.down {
+		v.touchEvent(gtx, e, top, report, cx, cy)
+		return
+	}
 	switch e.Kind {
 	case pointer.Press:
 		v.Focus(gtx)
@@ -598,34 +619,7 @@ func (v *TermView) pointer(gtx layout.Context, e pointer.Event, top int, mode te
 		if !v.dragging {
 			return
 		}
-		p := v.posAt(e.Position, top)
-		switch v.selMode {
-		case selWord:
-			s, en := v.wordAt(cellPos{p.line, min(p.col, v.cols-1)})
-			if p.before(v.anchor) {
-				p = s
-			} else {
-				p = en
-			}
-		case selLine:
-			if p.before(v.anchor) {
-				p.col = 0
-			} else {
-				p.col = v.cols
-			}
-		}
-		v.head = p
-		if v.selMode == selChar {
-			v.sel = v.head != v.anchor
-		}
-		// Dragging past the edges scrolls.
-		if e.Position.Y < 0 {
-			v.scrollLines(-1)
-			gtx.Execute(op.InvalidateCmd{})
-		} else if int(e.Position.Y) > v.padding.Y+v.rows*v.cellH {
-			v.scrollLines(1)
-			gtx.Execute(op.InvalidateCmd{})
-		}
+		v.dragSelect(gtx, e.Position, top)
 	case pointer.Release, pointer.Cancel:
 		if v.mouseBtn >= 0 {
 			if e.Kind == pointer.Release {
@@ -655,36 +649,74 @@ func (v *TermView) pointer(gtx layout.Context, e pointer.Event, top int, mode te
 			}
 			return
 		}
-		v.scrollRem += e.Scroll.Y / float32(v.cellH)
-		n := int(v.scrollRem)
-		v.scrollRem -= float32(n)
-		if n == 0 {
-			return
+		v.wheel(e.Scroll.Y, report, cx, cy, mods(e.Modifiers))
+	}
+}
+
+// wheel scrolls by dy pixels: through the scrollback, or for full-screen
+// programs as wheel events or arrow keys.
+func (v *TermView) wheel(dy float32, report bool, cx, cy int, m term.Mods) {
+	v.scrollRem += dy / float32(v.cellH)
+	n := int(v.scrollRem)
+	v.scrollRem -= float32(n)
+	if n == 0 {
+		return
+	}
+	v.term.Lock()
+	altScreen := v.term.AltScreen()
+	v.term.Unlock()
+	switch {
+	case report:
+		btn := term.MouseWheelDown
+		if n < 0 {
+			btn = term.MouseWheelUp
 		}
-		v.term.Lock()
-		altScreen := v.term.AltScreen()
-		v.term.Unlock()
-		switch {
-		case report:
-			btn := term.MouseWheelDown
-			if n < 0 {
-				btn = term.MouseWheelUp
-			}
-			for i := 0; i < min(abs(n), 10); i++ {
-				v.send(v.term.EncodeMouse(btn, cx, cy, mods(e.Modifiers), false, false))
-			}
-		case altScreen:
-			// Full-screen programs without mouse support get arrow keys.
-			k := term.KeyDown
-			if n < 0 {
-				k = term.KeyUp
-			}
-			for i := 0; i < min(abs(n), 10); i++ {
-				v.send(v.term.EncodeKey(k, 0))
-			}
-		default:
-			v.scrollLines(n)
+		for i := 0; i < min(abs(n), 10); i++ {
+			v.send(v.term.EncodeMouse(btn, cx, cy, m, false, false))
 		}
+	case altScreen:
+		// Full-screen programs without mouse support get arrow keys.
+		k := term.KeyDown
+		if n < 0 {
+			k = term.KeyUp
+		}
+		for i := 0; i < min(abs(n), 10); i++ {
+			v.send(v.term.EncodeKey(k, 0))
+		}
+	default:
+		v.scrollLines(n)
+	}
+}
+
+// dragSelect extends the selection to the pointer at pt, scrolling when
+// it is past the top or bottom edge.
+func (v *TermView) dragSelect(gtx layout.Context, pt f32.Point, top int) {
+	p := v.posAt(pt, top)
+	switch v.selMode {
+	case selWord:
+		s, en := v.wordAt(cellPos{p.line, min(p.col, v.cols-1)})
+		if p.before(v.anchor) {
+			p = s
+		} else {
+			p = en
+		}
+	case selLine:
+		if p.before(v.anchor) {
+			p.col = 0
+		} else {
+			p.col = v.cols
+		}
+	}
+	v.head = p
+	if v.selMode == selChar {
+		v.sel = v.head != v.anchor
+	}
+	if pt.Y < 0 {
+		v.scrollLines(-1)
+		gtx.Execute(op.InvalidateCmd{})
+	} else if int(pt.Y) > v.padding.Y+v.rows*v.cellH {
+		v.scrollLines(1)
+		gtx.Execute(op.InvalidateCmd{})
 	}
 }
 

@@ -136,6 +136,15 @@ func (a *App) menuEvents(gtx layout.Context) {
 // fading out and no longer takes input.
 func (a *App) drawMenu(gtx layout.Context, m *menu, p float32) {
 	th := a.th
+	// Rows are taller for fingers, and a touch screen has no shortcuts to
+	// hint at.
+	rowH := unit.Dp(30)
+	if a.mobile {
+		rowH = 42
+		for i := range m.items {
+			m.items[i].Hint = ""
+		}
+	}
 	// Measure the widest row.
 	width := gtx.Dp(180)
 	for i := range m.items {
@@ -171,7 +180,7 @@ func (a *App) drawMenu(gtx layout.Context, m *menu, p float32) {
 			continue
 		}
 		rows = append(rows, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			h := gtx.Dp(30)
+			h := gtx.Dp(rowH)
 			gtx.Constraints = layout.Exact(image.Pt(width, h))
 			if it.Disabled {
 				gtx = gtx.Disabled()

@@ -153,11 +153,15 @@ func (h *homeView) Layout(gtx layout.Context) layout.Dimensions {
 	size := gtx.Constraints.Max
 	fill(gtx.Ops, image.Rectangle{Max: size}, th.Bg0)
 
+	// The search keeps the keyboard focus, except on a phone, where the
+	// focus would keep the soft keyboard up over the list.
 	if h.wantFocus && len(a.dialogs) == 0 {
 		h.wantFocus = false
-		h.search.Focus(gtx)
+		if !a.mobile {
+			h.search.Focus(gtx)
+		}
 	}
-	if len(a.dialogs) == 0 && a.menu == nil && !gtx.Focused(&h.search.Editor) {
+	if len(a.dialogs) == 0 && a.menu == nil && !gtx.Focused(&h.search.Editor) && !a.mobile {
 		h.search.Focus(gtx)
 	}
 	submitted, changed := h.search.Events(gtx)

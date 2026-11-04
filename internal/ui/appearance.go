@@ -48,6 +48,11 @@ func (a *App) applyTheme() {
 		light = systemIsDark.Load() == 2
 	}
 	a.th.Apply(light, lightTerm, accentColor(a.set.Accent))
+	// On Android the system bars take the title bar's color, which also
+	// gives them icons that contrast with it.
+	if h, ok := a.host.(interface{ SetSystemBarColor(color.NRGBA) }); ok {
+		h.SetSystemBarColor(a.th.Bg1)
+	}
 	a.host.Invalidate()
 }
 

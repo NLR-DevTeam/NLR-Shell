@@ -1,13 +1,15 @@
 // NLR Shell is a native SSH client: terminal, system monitor, SFTP file
-// manager and port forwarding in one window. It builds for Windows and for
-// Linux/X11/Wayland; platform-specific window handling lives in event_*.go
-// and in the ui and store packages.
+// manager and port forwarding in one window. It builds for Windows, for
+// Linux/X11/Wayland and for Android (see tools/apk); platform-specific
+// window handling lives in event_*.go and in the ui, store and droid
+// packages.
 package main
 
 import (
 	"errors"
 	"flag"
 	"fmt"
+	"image/color"
 	"net"
 	"os"
 	"strconv"
@@ -19,6 +21,7 @@ import (
 	"gioui.org/op"
 	"gioui.org/unit"
 
+	"nlrshell/internal/droid"
 	"nlrshell/internal/store"
 	"nlrshell/internal/ui"
 )
@@ -79,6 +82,12 @@ func (h *host) HWND() uintptr           { return h.hwnd.Load() }
 // about pointer gestures and closing.
 func (h *host) SetWindowMode(m app.WindowMode) { h.w.Option(m.Option()) }
 
+// SetSystemBarColor colors the Android status and navigation bars, which
+// also picks light or dark icons for them.
+func (h *host) SetSystemBarColor(c color.NRGBA) {
+	h.w.Option(app.StatusColor(c), app.NavigationColor(c))
+}
+
 func main() {
 	flag.Parse()
 	st := store.Open(store.Dir())
@@ -98,6 +107,7 @@ func main() {
 
 	h := &host{w: w}
 	a := ui.New(h, st)
+	a.SetMobile(droid.Available)
 	if *connectFlag != "" {
 		p, err := connectProfile(*connectFlag, *identityFlag, *passwordFlag, *passphraseFlag)
 		if err != nil {
@@ -133,6 +143,7 @@ func run(w *app.Window, h *host, a *ui.App) {
 			}
 		case app.FrameEvent:
 			metric = e.Metric
+			a.SetBottomInset(float32(e.Insets.Bottom))
 			gtx := app.NewContext(&ops, e)
 			a.Layout(gtx)
 			e.Frame(gtx.Ops)

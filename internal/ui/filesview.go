@@ -49,9 +49,10 @@ type fileDrag struct {
 
 // filesView is the SFTP file manager panel.
 type filesView struct {
-	drag fileDrag
-	sv   *sessionView
-	a    *App
+	drag  fileDrag
+	touch touchTap
+	sv    *sessionView
+	a     *App
 
 	path    string
 	entries []sshx.Entry
@@ -479,13 +480,15 @@ func (fv *filesView) fileMenu() {
 			items = append(items, MenuItem{Label: "打开", Icon: icFolder, Hint: "Enter", Do: func() { fv.open(first) }},
 				MenuItem{Label: "在终端中进入", Icon: icTerminal, Do: func() { fv.cdTerminal(fv.full(first.Name)) }})
 		} else {
-			items = append(items, MenuItem{Label: "打开", Icon: icFile, Hint: "Enter", Do: func() { fv.open(first) }},
-				MenuItem{Label: "用本地程序打开", Icon: icOpen, Do: func() { fv.openExternal(first) }})
+			items = append(items, MenuItem{Label: "打开", Icon: icFile, Hint: "Enter", Do: func() { fv.open(first) }})
+			if !a.mobile {
+				items = append(items, MenuItem{Label: "用本地程序打开", Icon: icOpen, Do: func() { fv.openExternal(first) }})
+			}
 		}
 		items = append(items, MenuItem{Sep: true})
 	}
 	items = append(items,
-		MenuItem{Label: "下载", Icon: icDownload, Do: func() { fv.download(sel, a.set.DownloadDir) }},
+		MenuItem{Label: "下载", Icon: icDownload, Do: func() { a.needStorage(func() { fv.download(sel, a.set.DownloadDir) }) }},
 		MenuItem{Label: "下载到…", Do: func() { fv.downloadTo(sel) }},
 		MenuItem{Sep: true},
 		MenuItem{Label: "重命名", Icon: icEdit, Hint: "F2", Disabled: !single, Do: func() { fv.rename(first) }},
@@ -905,6 +908,29 @@ func (fv *filesView) fileList(gtx layout.Context) layout.Dimensions {
 		if idx < 0 || idx >= len(fv.view) || y < 0 || y >= listH-2*padV {
 			idx = -1
 		}
+		// A cancel names no source: it ends a touch as well as a click.
+		if pe.Kind == pointer.Cancel {
+			fv.touch.Event(gtx, pe, idx)
+		}
+		if pe.Source == pointer.Touch {
+			// A tap opens a folder and offers the actions on a file; there
+			// is no dragging rows around with a finger.
+			if fv.touch.Event(gtx, pe, idx) {
+				gtx.Execute(key.FocusCmd{Tag: fv})
+				fv.focused = true
+				switch en := fv.entry(idx); {
+				case en == nil:
+					fv.selected = map[string]bool{}
+					fv.cursor = -1
+				case en.IsDir:
+					fv.open(*en)
+				default:
+					fv.selectOnly(idx)
+					fv.fileMenu()
+				}
+			}
+			continue
+		}
 		switch pe.Kind {
 		case pointer.Leave:
 			fv.hover = -1
@@ -984,6 +1010,20 @@ func (fv *filesView) fileList(gtx layout.Context) layout.Dimensions {
 					fv.drag = fileDrag{pressed: true, start: pe.Position, target: -1, collapse: -1}
 				}
 			}
+		}
+	}
+
+	// A long press adds the row to the selection and opens its menu.
+	if idx, ok := fv.touch.Long(gtx, &fv.listTag); ok {
+		gtx.Execute(key.FocusCmd{Tag: fv})
+		fv.focused = true
+		if en := fv.entry(idx); en != nil {
+			fv.selected[en.Name] = true
+			fv.cursor, fv.anchor = idx, idx
+			fv.fileMenu()
+		} else {
+			fv.selected = map[string]bool{}
+			fv.bgMenu()
 		}
 	}
 

@@ -255,6 +255,13 @@ func (f *Field) hitArea(gtx layout.Context, r image.Rectangle) {
 		}
 		if pe, ok := e.(pointer.Event); ok && pe.Kind == pointer.Press {
 			gtx.Execute(key.FocusCmd{Tag: &f.Editor})
+			// Ask for the soft keyboard in the same frame, as the editor
+			// does when its text is tapped: moving the focus alone closes
+			// it, and the editor would only reopen it a frame later, which
+			// makes the keyboard and the layout above it flicker.
+			if !f.Editor.ReadOnly {
+				gtx.Execute(key.SoftKeyboardCmd{Show: true})
+			}
 		}
 	}
 	a := clip.Rect(r).Push(gtx.Ops)
@@ -340,6 +347,9 @@ func (f *Field) menuArea(gtx layout.Context, th *Theme, r image.Rectangle) {
 func editMenuArea(gtx layout.Context, th *Theme, rc *rightClick, e *widget.Editor, r image.Rectangle) {
 	if rc.Clicked(gtx) && th.editMenu != nil {
 		gtx.Execute(key.FocusCmd{Tag: e})
+		if !e.ReadOnly {
+			gtx.Execute(key.SoftKeyboardCmd{Show: true})
+		}
 		th.editMenu(e)
 	}
 	a := clip.Rect(r).Push(gtx.Ops)
@@ -357,13 +367,32 @@ type editorStyle struct {
 }
 
 func (s editorStyle) Layout(gtx layout.Context) layout.Dimensions {
-	es := material.Editor(s.th.Mat, s.e, s.hint)
+	es := material.Editor(s.th.Mat, s.e, "")
 	es.TextSize = s.size
 	es.Color = s.th.Text
-	es.HintColor = s.th.Text3
 	es.SelectionColor = s.th.Select
 	es.Font = s.font()
-	return es.Layout(gtx)
+	if s.e.Len() > 0 || s.hint == "" {
+		return es.Layout(gtx)
+	}
+	// The hint is drawn on the baseline of the empty editor, where the
+	// caret is, rather than at its top as the material editor does: the
+	// hint may be set in a fallback font (CJK) whose ascent differs from
+	// that of the editor's first font, and would then sit lower than the
+	// caret.
+	maxLines := 0
+	if s.e.SingleLine {
+		maxLines = 1
+	}
+	rec := op.Record(gtx.Ops)
+	hd := widget.Label{MaxLines: maxLines, Alignment: s.e.Alignment}.Layout(gtx, s.th.Shaper, es.Font, s.size, s.hint, colorMat(gtx, s.th.Text3))
+	hint := rec.Stop()
+	gtx.Constraints.Min.X = max(gtx.Constraints.Min.X, min(hd.Size.X, gtx.Constraints.Max.X))
+	d := es.Layout(gtx)
+	st := op.Offset(image.Pt(0, (d.Size.Y-d.Baseline)-(hd.Size.Y-hd.Baseline))).Push(gtx.Ops)
+	hint.Add(gtx.Ops)
+	st.Pop()
+	return d
 }
 
 func (s editorStyle) font() font.Font {
@@ -637,8 +666,9 @@ func (s *Splitter) Layout(gtx layout.Context, th *Theme, axis layout.Axis, value
 	return layout.Dimensions{Size: size}
 }
 
-// rightClick detects secondary-button presses on the current clip area.
-type rightClick struct{ tag bool }
+// rightClick detects secondary-button presses on the current clip area. A
+// long touch counts as one.
+type rightClick struct{ lp longPress }
 
 // Add registers the handler for the current clip area. It must be called
 // inside the area's clip, with pass-through so that left clicks still reach
@@ -660,13 +690,19 @@ func (r *rightClick) Clicked(gtx layout.Context) bool {
 func (r *rightClick) Buttons(gtx layout.Context) pointer.Buttons {
 	var b pointer.Buttons
 	for {
-		e, ok := gtx.Event(pointer.Filter{Target: r, Kinds: pointer.Press})
+		e, ok := gtx.Event(pointer.Filter{Target: r, Kinds: pointer.Press | pointer.Drag | pointer.Release | pointer.Cancel})
 		if !ok {
 			break
 		}
 		if pe, ok := e.(pointer.Event); ok {
-			b |= pe.Buttons
+			r.lp.Event(gtx, pe)
+			if pe.Kind == pointer.Press && pe.Source == pointer.Mouse {
+				b |= pe.Buttons
+			}
 		}
+	}
+	if r.lp.Fired(gtx, r) {
+		b |= pointer.ButtonSecondary
 	}
 	return b
 }

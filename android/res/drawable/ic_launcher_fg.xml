@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive icon foreground: the N> mark of build/icon.png, with the unit
+     square of tools/mkres mapped onto the 72dp visible area. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+	android:width="108dp" android:height="108dp"
+	android:viewportWidth="108" android:viewportHeight="108">
+	<path android:pathData="M32.4,69.84 L32.4,38.16 L55.44,69.84 L55.44,38.16"
+		android:strokeColor="#FFE6EAF0" android:strokeWidth="7.92"
+		android:strokeLineCap="round" android:strokeLineJoin="round" />
+	<path android:pathData="M62.64,54 L77.04,61.92 L62.64,69.84"
+		android:strokeColor="#FF00B935" android:strokeWidth="6.91"
+		android:strokeLineCap="round" android:strokeLineJoin="round" />
+</vector>

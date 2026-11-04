@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Template for tools/apk: {{.Field}} values are filled in at build time. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+	package="{{.AppID}}"
+	android:versionCode="{{.VersionCode}}"
+	android:versionName="{{.VersionName}}">
+	<uses-sdk android:minSdkVersion="{{.MinSDK}}" android:targetSdkVersion="{{.TargetSDK}}" />
+
+	<uses-permission android:name="android.permission.INTERNET" />
+	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+	<uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+	<uses-permission android:name="android.permission.WAKE_LOCK" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+	<!-- Shared storage for uploads and downloads: "all files access" on
+	     Android 11+, the legacy permissions before. -->
+	<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+	<uses-feature android:glEsVersion="0x00020000" android:required="true" />
+	<uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+	<application
+		android:label="NLR Shell"
+		android:icon="@mipmap/ic_launcher"
+		android:theme="@style/Theme.NLRShell"
+		android:requestLegacyExternalStorage="true"
+		android:allowBackup="false">
+		<activity android:name="org.gioui.GioActivity"
+			android:label="NLR Shell"
+			android:configChanges="screenSize|screenLayout|smallestScreenSize|orientation|keyboard|keyboardHidden|navigation|uiMode|density|fontScale"
+			android:windowSoftInputMode="adjustResize"
+			android:launchMode="singleTask"
+			android:exported="true">
+			<intent-filter>
+				<action android:name="android.intent.action.MAIN" />
+				<category android:name="android.intent.category.LAUNCHER" />
+			</intent-filter>
+		</activity>
+		<service android:name="org.nlrshell.KeepAliveService"
+			android:foregroundServiceType="specialUse"
+			android:exported="false">
+			<property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+				android:value="Keeps the user's open SSH terminal sessions connected while the app is in the background." />
+		</service>
+	</application>
+</manifest>

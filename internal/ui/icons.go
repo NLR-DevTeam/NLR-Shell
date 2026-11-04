@@ -42,6 +42,8 @@ var (
 	icCopy      = mustIcon(icons.ContentContentCopy)
 	icPaste     = mustIcon(icons.ContentContentPaste)
 	icMore      = mustIcon(icons.NavigationMoreHoriz)
+	icMoreVert  = mustIcon(icons.NavigationMoreVert)
+	icKeyboard  = mustIcon(icons.HardwareKeyboard)
 	icKey       = mustIcon(icons.CommunicationVPNKey)
 	icLock      = mustIcon(icons.ActionLock)
 	icServer    = mustIcon(icons.ActionDNS)

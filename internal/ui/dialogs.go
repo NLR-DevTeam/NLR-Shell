@@ -37,6 +37,13 @@ type profileDialog struct {
 	keyFocused bool
 	errMsg     string
 	focused    bool
+	// list scrolls the form when the window is too short for it, as on a
+	// phone with the soft keyboard up; seen is the field that had the focus
+	// and the list height when the focused row was last brought into view.
+	list  widget.List
+	fade  listFade
+	seen  *Field
+	seenH int
 
 	closeClk, cancelClk, saveClk, connectClk widget.Clickable
 }
@@ -229,84 +236,101 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if d.p.ID != "" {
 		title = "编辑连接"
 	}
-	row := func(gap unit.Dp, ws ...layout.FlexChild) layout.FlexChild {
-		return layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+	// rows are the lines of the form; rowField holds the first field of
+	// each, for scrolling the focused one into view.
+	var rows []layout.Widget
+	var rowField []*Field
+	row := func(gap unit.Dp, ws ...layout.FlexChild) layout.Widget {
+		return func(gtx layout.Context) layout.Dimensions {
 			return layout.Inset{Bottom: gap}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Alignment: layout.End}.Layout(gtx, ws...)
 			})
-		})
+		}
+	}
+	add := func(w layout.Widget, fs ...*Field) {
+		rows = append(rows, w)
+		var f *Field
+		for _, x := range fs {
+			if gtx.Focused(&x.Editor) {
+				f = x
+			}
+		}
+		rowField = append(rowField, f)
 	}
 	fld := func(weight float32, f *Field) layout.FlexChild {
 		return layout.Flexed(weight, func(gtx layout.Context) layout.Dimensions { return f.Layout(gtx, th) })
 	}
 	return a.dialogFrame(gtx, title, 520, &d.closeClk, d,
 		func(gtx layout.Context) layout.Dimensions {
-			rows := []layout.FlexChild{
-				row(12, fld(3, &d.host), hspace(10), fld(1, &d.port)),
-				row(12, fld(1, &d.user), hspace(10), fld(1, &d.name)),
-				row(14, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions { return th.txt(gtx, "认证方式", 12, th.Text2) }),
-						vspace(5),
-						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-							return d.auth.Layout(gtx, th, [][2]string{{store.AuthPassword, "密码"}, {store.AuthKey, "私钥"}, {store.AuthAgent, "SSH Agent"}})
-						}),
-					)
-				})),
-			}
+			add(row(12, fld(3, &d.host), hspace(10), fld(1, &d.port)), &d.host, &d.port)
+			add(row(12, fld(1, &d.user), hspace(10), fld(1, &d.name)), &d.user, &d.name)
+			add(row(14, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions { return th.txt(gtx, "认证方式", 12, th.Text2) }),
+					vspace(5),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						return d.auth.Layout(gtx, th, [][2]string{{store.AuthPassword, "密码"}, {store.AuthKey, "私钥"}, {store.AuthAgent, "SSH Agent"}})
+					}),
+				)
+			})))
 			switch d.auth.Value {
 			case store.AuthPassword:
-				rows = append(rows, row(12, fld(1, &d.password)))
+				add(row(12, fld(1, &d.password)), &d.password)
 			case store.AuthKey:
 				label, link := "私钥文件", "手动输入"
 				if d.keyManual {
 					label, link = "私钥", "选择文件"
 				}
-				rows = append(rows, layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				add(func(gtx layout.Context) layout.Dimensions {
 					return labelLink(gtx, th, label, &d.keyModeClk, link)
-				}))
+				})
 				if d.keyManual {
-					rows = append(rows, row(12, fld(1, &d.keyData)))
+					add(row(12, fld(1, &d.keyData)), &d.keyData)
 				} else {
-					rows = append(rows, row(12, fld(1, &d.keyPath), hspace(8), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+					add(row(12, fld(1, &d.keyPath), hspace(8), layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return th.button(gtx, &d.browseClk, "浏览…", nil, btnDefault)
-					})))
+					})), &d.keyPath)
 				}
-				rows = append(rows, row(12, fld(1, &d.passphrase)))
+				add(row(12, fld(1, &d.passphrase)), &d.passphrase)
 			}
-			rows = append(rows,
-				row(4, fld(1, &d.group), hspace(10), layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					jump := "无"
-					if jp, ok := a.st.Profile(d.p.JumpID); ok && d.p.JumpID != "" {
-						jump = jp.Title()
+			add(row(4, fld(1, &d.group), hspace(10), layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				jump := "无"
+				if jp, ok := a.st.Profile(d.p.JumpID); ok && d.p.JumpID != "" {
+					jump = jp.Title()
+				}
+				return selectBox(gtx, th, &d.jumpClk, "跳板机", jump)
+			})), &d.group)
+			add(layout.Spacer{Height: 8}.Layout)
+			add(row(4, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				kind := proxyKinds[0][1]
+				for _, k := range proxyKinds {
+					if k[0] == d.p.ProxyType {
+						kind = k[1]
 					}
-					return selectBox(gtx, th, &d.jumpClk, "跳板机", jump)
-				})),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions { return layout.Spacer{Height: 8}.Layout(gtx) }),
-				row(4, layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					kind := proxyKinds[0][1]
-					for _, k := range proxyKinds {
-						if k[0] == d.p.ProxyType {
-							kind = k[1]
-						}
-					}
-					return selectBox(gtx, th, &d.proxyClk, "代理", kind)
-				}), hspace(10), layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-					if d.p.ProxyType == store.ProxyNone {
-						return layout.Dimensions{Size: image.Pt(gtx.Constraints.Max.X, 0)}
-					}
-					return d.proxyAddr.Layout(gtx, th)
-				})),
-				layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-					if d.errMsg == "" {
-						return layout.Dimensions{}
-					}
-					return layout.Inset{Top: 10}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-						return th.txt(gtx, d.errMsg, 12, th.Danger)
-					})
-				}),
-			)
-			return layout.Flex{Axis: layout.Vertical}.Layout(gtx, rows...)
+				}
+				return selectBox(gtx, th, &d.proxyClk, "代理", kind)
+			}), hspace(10), layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				if d.p.ProxyType == store.ProxyNone {
+					return layout.Dimensions{Size: image.Pt(gtx.Constraints.Max.X, 0)}
+				}
+				return d.proxyAddr.Layout(gtx, th)
+			})), &d.proxyAddr)
+			add(func(gtx layout.Context) layout.Dimensions {
+				if d.errMsg == "" {
+					return layout.Dimensions{}
+				}
+				return layout.Inset{Top: 10}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+					return th.txt(gtx, d.errMsg, 12, th.Danger)
+				})
+			})
+			d.reveal(gtx, rowField)
+			// The scroll bar floats over the form and only shows while it
+			// scrolls, so the form keeps its layout when the soft keyboard
+			// makes it scroll.
+			return th.autoHideList(gtx, &d.list, &d.fade, len(rows), func(gtx layout.Context, i int) layout.Dimensions {
+				gtx.Constraints.Min.X = gtx.Constraints.Max.X
+				return rows[i](gtx)
+			})
 		},
 		func(gtx layout.Context) layout.Dimensions {
 			return buttonRow(gtx,
@@ -321,6 +345,29 @@ func (d *profileDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 				},
 			)
 		})
+}
+
+// reveal scrolls the row of the focused field into view when the focus
+// moves or the form gets shorter (the soft keyboard came up), and leaves
+// the scrolling to the user otherwise.
+func (d *profileDialog) reveal(gtx layout.Context, rowField []*Field) {
+	h := gtx.Constraints.Max.Y
+	var focused *Field
+	at := -1
+	for i, f := range rowField {
+		if f != nil {
+			focused, at = f, i
+		}
+	}
+	if focused == nil || (focused == d.seen && h >= d.seenH) {
+		d.seen, d.seenH = focused, h
+		return
+	}
+	d.seen, d.seenH = focused, h
+	pos := d.list.Position
+	if at < pos.First || (pos.Count > 0 && at >= pos.First+pos.Count-1) {
+		d.list.ScrollTo(at)
+	}
 }
 
 // labelLink draws a field label followed by a link that switches how the
@@ -756,6 +803,7 @@ type settingsDialog struct {
 	copySel, commandBar, follow, hidden         widget.Bool
 	closeOnExit, recentOrder                    widget.Bool
 	confirmExit, animations                     widget.Bool
+	keepAlive                                   widget.Bool
 	browseClk                                   widget.Clickable
 	closeClk, cancelClk, saveClk                widget.Clickable
 	errMsg                                      string
@@ -831,6 +879,7 @@ func newSettingsDialog(a *App) *settingsDialog {
 	d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value = s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden
 	d.closeOnExit.Value = s.CloseOnExit
 	d.confirmExit.Value, d.animations.Value = s.ConfirmExit, s.Animations
+	d.keepAlive.Value = s.KeepAlive
 	d.recentOrder.Value = !a.st.ManualOrder()
 	d.appearance, d.accent, d.rightClick, d.background = s.Appearance, s.Accent, s.RightClick, s.Background
 	return d
@@ -874,6 +923,7 @@ func (d *settingsDialog) Submit(a *App) {
 		s.CopyOnSelect, s.CommandBar, s.FollowCwd, s.ShowHidden = d.copySel.Value, d.commandBar.Value, d.follow.Value, d.hidden.Value
 		s.CloseOnExit = d.closeOnExit.Value
 		s.ConfirmExit, s.Animations = d.confirmExit.Value, d.animations.Value
+		s.KeepAlive = d.keepAlive.Value
 		s.Appearance, s.Accent, s.RightClick, s.Background = d.appearance, d.accent, d.rightClick, d.background
 	})
 	a.applyTheme()
@@ -955,22 +1005,51 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	if d.background != "" {
 		bgName = baseName(d.background)
 	}
-	rows := []layout.Widget{
-		row(sel(1, &d.appearanceClk, "界面风格", choiceLabel(appearanceChoices, d.appearance)), hspace(10),
-			sel(1, &d.accentClk, "主题颜色", choiceLabel(accentChoices, d.accent))),
-		row(sel(1, &d.bgPickClk, "背景图片", bgName), hspace(8), btn(&d.bgClearClk, "清除")),
-		row(combo(2, &d.fontFamily), hspace(10), combo(2, &d.cjkFont), hspace(10), fld(1, &d.fontSize)),
-		row(combo(2, &d.emojiFont), hspace(10), fld(1, &d.scrollback), hspace(10), fld(1, &d.interval)),
-		row(sel(1, &d.rightClickClk, "终端右键", choiceLabel(rightClickChoices, d.rightClick))),
+	var rows []layout.Widget
+	if a.compact() {
+		// One setting per row on a narrow screen.
+		rows = []layout.Widget{
+			row(sel(1, &d.appearanceClk, "界面风格", choiceLabel(appearanceChoices, d.appearance))),
+			row(sel(1, &d.accentClk, "主题颜色", choiceLabel(accentChoices, d.accent))),
+			row(sel(1, &d.bgPickClk, "背景图片", bgName), hspace(8), btn(&d.bgClearClk, "清除")),
+			row(combo(1, &d.fontFamily)),
+			row(combo(1, &d.cjkFont)),
+			row(combo(1, &d.emojiFont)),
+			row(fld(1, &d.fontSize), hspace(10), fld(1, &d.scrollback)),
+			row(fld(1, &d.interval)),
+		}
+	} else {
+		rows = []layout.Widget{
+			row(sel(1, &d.appearanceClk, "界面风格", choiceLabel(appearanceChoices, d.appearance)), hspace(10),
+				sel(1, &d.accentClk, "主题颜色", choiceLabel(accentChoices, d.accent))),
+			row(sel(1, &d.bgPickClk, "背景图片", bgName), hspace(8), btn(&d.bgClearClk, "清除")),
+			row(combo(2, &d.fontFamily), hspace(10), combo(2, &d.cjkFont), hspace(10), fld(1, &d.fontSize)),
+			row(combo(2, &d.emojiFont), hspace(10), fld(1, &d.scrollback), hspace(10), fld(1, &d.interval)),
+		}
+	}
+	if !a.mobile {
+		// A touch screen has no right click: a long press opens the menu.
+		rows = append(rows, row(sel(1, &d.rightClickClk, "终端右键", choiceLabel(rightClickChoices, d.rightClick))))
+	}
+	rows = append(rows,
 		row(fld(1, &d.downloadDir), hspace(8), btn(&d.browseClk, "浏览…")),
 		vspaceW(4),
+	)
+	if a.mobile {
+		rows = append(rows, chk(&d.keepAlive, "后台保持连接（显示常驻通知）"))
+	}
+	rows = append(rows,
 		chk(&d.commandBar, "启用命令栏"),
 		chk(&d.copySel, "选中即复制"),
 		chk(&d.follow, "文件跟随终端目录"),
 		chk(&d.hidden, "显示隐藏文件"),
 		chk(&d.closeOnExit, "SSH 会话正常退出时自动关闭页面"),
 		chk(&d.recentOrder, "首页连接按最近使用排序"),
-		chk(&d.confirmExit, "关闭多个标签页时确认"),
+	)
+	if !a.mobile {
+		rows = append(rows, chk(&d.confirmExit, "关闭多个标签页时确认"))
+	}
+	rows = append(rows,
 		chk(&d.animations, "启用动画"),
 		func(gtx layout.Context) layout.Dimensions {
 			if d.errMsg == "" {
@@ -978,7 +1057,7 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			}
 			return th.txt(gtx, d.errMsg, 12, th.Danger)
 		},
-	}
+	)
 	return a.dialogFrame(gtx, "设置", 520, &d.closeClk, d,
 		func(gtx layout.Context) layout.Dimensions {
 			// Scrolls when the window is too short for all settings.

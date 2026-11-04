@@ -17,22 +17,27 @@ import (
 	"gioui.org/op/clip"
 	"gioui.org/widget"
 
+	"nlrshell/internal/droid"
 	"nlrshell/internal/store"
 )
 
 // pickFiles lets the user choose one or more files. It returns at once; the
-// chosen paths are reported through done on the UI goroutine.
+// chosen paths are reported through done on the UI goroutine. On Android
+// it first makes sure the app may see the files in shared storage: without
+// that permission folders list only their subfolders.
 func pickFiles(a *App, title string, done func([]string)) {
-	a.Open(newFilePicker(a, title, false, done))
+	a.needStorage(func() { a.Open(newFilePicker(a, title, false, done)) })
 }
 
 // pickFolder lets the user choose a folder, again reporting through done.
 func pickFolder(a *App, title string, done func(string)) {
-	a.Open(newFilePicker(a, title, true, func(paths []string) {
-		if len(paths) > 0 {
-			done(paths[0])
-		}
-	}))
+	a.needStorage(func() {
+		a.Open(newFilePicker(a, title, true, func(paths []string) {
+			if len(paths) > 0 {
+				done(paths[0])
+			}
+		}))
+	})
 }
 
 // pickEntry is one row of the file picker.
@@ -59,6 +64,7 @@ type filePicker struct {
 	cursor  int
 	anchor  int
 	hover   int
+	touch   touchTap
 	errMsg  string
 	hidden  bool
 	loaded  bool
@@ -69,7 +75,10 @@ type filePicker struct {
 	listTag struct{}
 
 	upClk, homeClk, hiddenClk widget.Clickable
-	closeClk, okClk, noClk    widget.Clickable
+	// placesClk opens the side bar's places as a menu in the compact
+	// layout, which has no room for the side bar.
+	placesClk              widget.Clickable
+	closeClk, okClk, noClk widget.Clickable
 
 	lastHit  int
 	lastTime time.Time
@@ -82,6 +91,7 @@ type filePicker struct {
 	sideTag   struct{}
 	sideHover int
 	sideDrag  sideDrag
+	sideTouch touchTap
 
 	done func([]string)
 }
@@ -242,17 +252,35 @@ func (d *filePicker) load(dir string) {
 }
 
 // start is where the picker opens: the directory it was last used in, if
-// it still exists, otherwise the home directory.
+// it still exists, otherwise the home directory (on Android its Download
+// folder, where keys and other files usually arrive).
 func (d *filePicker) start() string {
-	if p := d.a.set.PickerDir; p != "" {
-		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+	isDir := func(p string) bool {
+		fi, err := os.Stat(p)
+		return err == nil && fi.IsDir()
+	}
+	home := d.home()
+	if p := d.a.set.PickerDir; p != "" && isDir(p) {
+		// On Android only the shared storage is worth browsing; the
+		// app's own directories are not.
+		if rel, err := filepath.Rel(home, p); !d.a.mobile || err == nil && !strings.HasPrefix(rel, "..") {
 			return p
 		}
 	}
-	return d.home()
+	if dl := filepath.Join(home, "Download"); d.a.mobile && isDir(dl) {
+		return dl
+	}
+	return home
 }
 
+// home is the user's home directory, which is the shared storage on
+// Android: the process's home there is the app's private directory.
 func (d *filePicker) home() string {
+	if d.a.mobile {
+		if root := droid.StorageRoot(); root != "" {
+			return root
+		}
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return home
 	}
@@ -342,6 +370,17 @@ func (d *filePicker) events(gtx layout.Context) {
 	}
 	if d.homeClk.Clicked(gtx) {
 		d.load(d.home())
+	}
+	if d.placesClk.Clicked(gtx) {
+		var items []MenuItem
+		for _, it := range d.sideItems() {
+			if it.sep {
+				items = append(items, MenuItem{Sep: true})
+				continue
+			}
+			items = append(items, MenuItem{Label: it.name, Icon: it.icon, Checked: samePath(it.path, d.dir), Do: func() { d.load(it.path) }})
+		}
+		d.a.Menu(items...)
 	}
 	if d.hiddenClk.Clicked(gtx) {
 		d.hidden = !d.hidden
@@ -447,11 +486,17 @@ func (d *filePicker) Layout(gtx layout.Context, a *App) layout.Dimensions {
 			// dialogFrame allows the body to grow to the window height; a
 			// file list does not need that much room.
 			gtx.Constraints.Min.Y = 0
-			gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, gtx.Dp(420))
+			compact := a.compact()
+			if !compact {
+				gtx.Constraints.Max.Y = min(gtx.Constraints.Max.Y, gtx.Dp(420))
+			}
 			return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 				layout.Rigid(d.toolbar),
 				vspace(8),
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					if compact {
+						return d.listArea(gtx)
+					}
 					return layout.Flex{}.Layout(gtx,
 						layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 							gtx.Constraints = layout.Exact(image.Pt(min(gtx.Dp(176), gtx.Constraints.Max.X/3), gtx.Constraints.Max.Y))
@@ -493,10 +538,14 @@ func (d *filePicker) toolbar(gtx layout.Context) layout.Dimensions {
 			return th.iconButton(gtx, clk, ic, 28, 17, th.Text2, on, title)
 		})
 	}
+	home := btn(&d.homeClk, icHome, false, true, "主目录")
+	if d.a.compact() {
+		home = btn(&d.placesClk, icPin, false, true, "位置")
+	}
 	return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 		btn(&d.upClk, icUp, false, filepath.Dir(d.dir) != d.dir, "上级目录"),
 		hspace(4),
-		btn(&d.homeClk, icHome, false, true, "主目录"),
+		home,
 		hspace(6),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			d.path.Hint = "路径"
@@ -514,7 +563,7 @@ func (d *filePicker) listArea(gtx layout.Context) layout.Dimensions {
 
 	// Pointer handling over the rows.
 	for {
-		e, ok := gtx.Event(pointer.Filter{Target: &d.listTag, Kinds: pointer.Press | pointer.Move | pointer.Leave})
+		e, ok := gtx.Event(pointer.Filter{Target: &d.listTag, Kinds: pointer.Press | pointer.Move | pointer.Leave | pointer.Drag | pointer.Release | pointer.Cancel})
 		if !ok {
 			break
 		}
@@ -525,6 +574,25 @@ func (d *filePicker) listArea(gtx layout.Context) layout.Dimensions {
 		idx := d.list.Position.First + (int(pe.Position.Y)+d.list.Position.Offset)/rowH
 		if idx < 0 || idx >= len(d.entries) || pe.Position.Y < 0 {
 			idx = -1
+		}
+		// A cancel names no source: it ends a touch as well as a click.
+		if pe.Kind == pointer.Cancel {
+			d.touch.Event(gtx, pe, idx)
+		}
+		if pe.Source == pointer.Touch {
+			// A tap opens a folder and checks or unchecks a file, so
+			// several files can be picked without a Ctrl key.
+			if d.touch.Event(gtx, pe, idx) {
+				switch {
+				case idx < 0:
+				case d.entries[idx].dir:
+					d.activate(idx)
+				default:
+					d.selectRow(idx, key.ModCtrl)
+					d.anchor = idx
+				}
+			}
+			continue
 		}
 		switch pe.Kind {
 		case pointer.Leave:
@@ -554,6 +622,10 @@ func (d *filePicker) listArea(gtx layout.Context) layout.Dimensions {
 			}
 			d.selectRow(idx, pe.Modifiers)
 		}
+	}
+
+	if idx, ok := d.touch.Long(gtx, &d.listTag); ok {
+		d.rowMenu(idx)
 	}
 
 	gtx.Constraints = layout.Exact(size)
@@ -629,6 +701,10 @@ func (d *filePicker) row(gtx layout.Context, i int, rowH int) layout.Dimensions 
 		ic, icc = icLink, th.Purple
 	}
 	sizeW, timeW := gtx.Dp(90), gtx.Dp(130)
+	if w < gtx.Dp(420) {
+		// A narrow list keeps the names readable and drops the dates.
+		sizeW, timeW = gtx.Dp(76), 0
+	}
 	cell(0, max(w-sizeW-timeW-gtx.Dp(14), gtx.Dp(120)), false, func(gtx layout.Context) layout.Dimensions {
 		return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions { return drawIcon(gtx, ic, 16, icc) }),

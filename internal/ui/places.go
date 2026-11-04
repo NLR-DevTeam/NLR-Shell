@@ -228,6 +228,17 @@ func (d *filePicker) sideEvents(gtx layout.Context, items []sideItem) {
 		if pe.Position.Y < 0 {
 			idx = -1
 		}
+		// A cancel names no source: it ends a touch as well as a click.
+		if pe.Kind == pointer.Cancel {
+			d.sideTouch.Event(gtx, pe, idx)
+		}
+		if pe.Source == pointer.Touch {
+			// A tap opens the place; pins are not reordered by touch.
+			if d.sideTouch.Event(gtx, pe, idx) && idx >= 0 && !items[idx].sep {
+				d.load(items[idx].path)
+			}
+			continue
+		}
 		dr := &d.sideDrag
 		switch pe.Kind {
 		case pointer.Leave:
@@ -265,6 +276,9 @@ func (d *filePicker) sideEvents(gtx layout.Context, items []sideItem) {
 				d.load(items[idx].path)
 			}
 		}
+	}
+	if idx, ok := d.sideTouch.Long(gtx, &d.sideTag); ok {
+		d.sideMenu(items, idx)
 	}
 }
 

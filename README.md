@@ -114,6 +114,31 @@ claude mcp add --transport http nlrshell http://127.0.0.1:14559/mcp
 ./build.sh --test      # 编译前执行测试
 ```
 
+### Android
+
+Android 版与桌面版共用同一套 Go + Gio 代码，界面风格一致，并针对手机做了适配：
+
+- 窄屏（手机竖屏）下终端、监控、文件分屏显示，通过标题栏按钮切换；标签页收进标题栏的下拉菜单
+- 终端下方提供 Esc / Tab / Ctrl / Alt / 方向键 / F1–F12 等软键盘缺少的按键（Ctrl、Alt 点一下后作用于下一个按键）
+- 触摸操作：点按终端弹出键盘，拖动滚动，长按选词并弹出菜单，双指缩放字号；列表中长按即右键菜单
+- 返回键依次关闭菜单 / 对话框、回到终端、回到主页，最后将应用切到后台
+- 有会话连接时以前台服务（常驻通知）保持后台连接，可在设置中关闭
+- 上传、下载需要授予「访问所有文件」权限，首次使用时会引导前往系统设置
+- 不提供 MCP 服务，不支持用其他应用打开远程文件
+
+构建需要 Android SDK（含 build-tools、platform 和 NDK）以及 JDK 17+：
+
+```powershell
+.\build-android.ps1                  # 生成 NLRShell.apk（arm64）
+.\build-android.ps1 -Arch arm64,arm  # 同时包含 32 位 ARM
+```
+
+```sh
+./build-android.sh                    # Linux / macOS
+```
+
+`ANDROID_HOME` 默认为 `%LOCALAPPDATA%\Android\Sdk`（Linux 下为 `~/Android/Sdk`），NDK 可通过 `sdkmanager "ndk;<版本>"` 安装。未指定签名密钥时使用 `~/.android/debug.keystore` 调试密钥签名（不存在时自动创建）；发布时请用 `-Keystore` 指定自己的密钥。
+
 ## Linux 平台注意事项
 
 - **配置路径**：配置文件存放在 `$XDG_CONFIG_HOME/nlrshell`（默认即 `~/.config/nlrshell`）。如果你需要便携模式，可以指定环境变量 `NLRSHELL_DATA` 来自定义路径（Windows 下路径默认为 `%APPDATA%\NLR Shell`）。

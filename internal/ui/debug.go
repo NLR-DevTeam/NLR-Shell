@@ -3,6 +3,8 @@ package ui
 import (
 	"image"
 
+	"gioui.org/layout"
+
 	"nlrshell/internal/sshx"
 )
 
@@ -145,3 +147,27 @@ func (a *App) FileSelection() []string {
 
 // SetPrivacy switches privacy mode; it fades in over the next frames.
 func (a *App) SetPrivacy(on bool) { a.set.Privacy = on }
+
+// Pane returns the pane the compact layout shows for the active session.
+func (a *App) Pane() int {
+	if sv := a.current(); sv != nil {
+		return sv.pane
+	}
+	return -1
+}
+
+// FocusProfileField focuses a field of the open connection form by name
+// ("host", "group", ...), as a tap on it does.
+func (a *App) FocusProfileField(name string) {
+	for _, dl := range a.dialogs {
+		d, ok := dl.(*profileDialog)
+		if !ok {
+			continue
+		}
+		f := map[string]*Field{"host": &d.host, "port": &d.port, "user": &d.user, "name": &d.name,
+			"password": &d.password, "group": &d.group}[name]
+		if f != nil {
+			a.later(func(gtx layout.Context) { f.Focus(gtx) })
+		}
+	}
+}

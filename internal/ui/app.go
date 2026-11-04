@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -68,6 +69,9 @@ type App struct {
 	pxPerDp   float32
 	maximized bool
 	decorated bool
+	// mobile is set on Android, which is touch first (see mobile.go).
+	mobile bool
+	mob    mobileState
 	// unattended is set for -connect: the connection must not open dialogs,
 	// so new host keys are trusted, changed ones refused, and missing
 	// credentials fail the connection.
@@ -125,12 +129,12 @@ func New(host Host, st *store.Store) *App {
 func (a *App) Theme() *Theme { return a.th }
 
 // SetMaximized tells the app whether the window is maximized.
-func (a *App) SetMaximized(m bool) { a.maximized = m }
+func (a *App) SetMaximized(m bool) { a.maximized = m || a.mobile }
 
 // SetDecorated tells the app whether the platform draws the window
 // decorations. Windows requests a borderless window, but X11 and Wayland
 // always decorate, so the in-app window buttons are dropped there.
-func (a *App) SetDecorated(on bool) { a.decorated = on }
+func (a *App) SetDecorated(on bool) { a.decorated = on || a.mobile }
 
 // SetUnattended makes connection prompts go away: new host keys are trusted
 // without asking, changed ones are refused, and anything else that would
@@ -141,6 +145,9 @@ func (a *App) SetUnattended(on bool) { a.unattended = on }
 // RememberWindow records the window size (in dp) and state so the next
 // launch restores it. It must be called from the UI goroutine.
 func (a *App) RememberWindow(w, h int, maximized bool) {
+	if a.mobile {
+		return
+	}
 	if maximized {
 		if !a.set.Maximized {
 			a.updateSettings(func(s *store.Settings) { s.Maximized = true })
@@ -202,6 +209,10 @@ func (a *App) Shutdown() {
 // page counts as one, so any open tab asks. Holding Shift skips the
 // question.
 func (a *App) quit() {
+	if a.mobile {
+		a.quitMobile()
+		return
+	}
 	if a.mods.Contain(key.ModShift) || !a.set.ConfirmExit || len(a.tabs) == 0 {
 		a.quitting.Store(true)
 		a.host.Perform(system.ActionClose)
@@ -351,19 +362,31 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 		}
 	}
 	a.shortcuts(gtx)
+	a.backKey(gtx)
 
 	a.closeOnExit()
+	a.syncKeepAlive()
+	a.storageTick(gtx)
 	if a.privBtn.Clicked(gtx) {
 		a.updateSettings(func(s *store.Settings) { s.Privacy = !s.Privacy })
 	}
 	a.stepPrivacy(gtx)
 
+	if a.mobile {
+		// The status and navigation bars are drawn over the window, around
+		// the area the layout gets.
+		paint.Fill(gtx.Ops, a.th.Bg1)
+	}
 	root := clip.Rect{Max: a.size}.Push(gtx.Ops)
 	event.Op(gtx.Ops, a)
 	paint.Fill(gtx.Ops, a.th.Bg1)
 
+	titlebar := a.layoutTitlebar
+	if a.compact() {
+		titlebar = a.layoutCompactTitlebar
+	}
 	layout.Flex{Axis: layout.Vertical}.Layout(gtx,
-		layout.Rigid(a.layoutTitlebar),
+		layout.Rigid(titlebar),
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			if t := a.currentTab(); t != nil {
 				return t.Layout(gtx)
@@ -375,7 +398,8 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 		a.refocus = false
 		if t := a.currentTab(); t != nil {
 			t.focus(gtx)
-		} else {
+		} else if !a.mobile {
+			// On a phone, focusing the search would bring up the keyboard.
 			a.home.search.Focus(gtx)
 		}
 	}
@@ -385,7 +409,7 @@ func (a *App) Layout(gtx layout.Context) layout.Dimensions {
 	a.layoutMenu(gtx)
 	a.layoutToasts(gtx)
 	a.layoutTooltip(gtx)
-	if !a.maximized {
+	if !a.maximized && !a.mobile {
 		strokeRR(gtx.Ops, image.Rectangle{Max: a.size}, 0, float32(max(gtx.Dp(1), 1)), a.th.Border)
 	}
 	root.Pop()
@@ -869,18 +893,27 @@ func (a *App) layoutTooltip(gtx layout.Context) {
 }
 
 func (a *App) appMenu() {
-	a.MenuAt(image.Pt(a.dp(4), a.dp(titleH)),
-		MenuItem{Label: "新建连接", Icon: icAdd, Hint: "Ctrl+Shift+N", Do: func() {
+	items := []MenuItem{
+		{Label: "新建连接", Icon: icAdd, Hint: "Ctrl+Shift+N", Do: func() {
 			a.home.editProfile(store.Profile{Port: 22, Auth: store.AuthPassword}, true)
 		}},
-		MenuItem{Label: "主页", Icon: icHome, Hint: "Ctrl+Shift+T", Do: func() { a.activate(-1) }},
-		MenuItem{Sep: true},
-		MenuItem{Label: "设置", Icon: icSettings, Do: func() { a.Open(newSettingsDialog(a)) }},
-		MenuItem{Label: "MCP 服务", Icon: icMCP, Do: func() { a.Open(newMCPDialog(a)) }},
-		MenuItem{Label: "关于", Icon: icInfo, Do: func() { a.Open(&aboutDialog{}) }},
-		MenuItem{Sep: true},
-		MenuItem{Label: "退出", Icon: icPower, Do: a.quit},
-	)
+		{Label: "主页", Icon: icHome, Hint: "Ctrl+Shift+T", Do: func() { a.activate(-1) }},
+		{Sep: true},
+		{Label: "设置", Icon: icSettings, Do: func() { a.Open(newSettingsDialog(a)) }},
+		{Label: "MCP 服务", Icon: icMCP, Do: func() { a.Open(newMCPDialog(a)) }},
+		{Label: "关于", Icon: icInfo, Do: func() { a.Open(&aboutDialog{}) }},
+		{Sep: true},
+		{Label: "退出", Icon: icPower, Do: a.quit},
+	}
+	if a.mobile {
+		// AI assistants on a phone cannot reach a local MCP server, and
+		// there are no keyboard shortcuts to hint at.
+		items = slices.DeleteFunc(items, func(it MenuItem) bool { return it.Icon == icMCP })
+		for i := range items {
+			items[i].Hint = ""
+		}
+	}
+	a.MenuAt(image.Pt(a.dp(4), a.dp(titleH)), items...)
 }
 
 // Version is the application version shown in the about box.

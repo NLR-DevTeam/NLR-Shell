@@ -277,6 +277,7 @@ func main() {
 	only := flag.String("only", "", "comma separated list of shots to take (default all)")
 	bgImage := flag.String("bg", "build/icon.png", "image for the background shot")
 	anim := flag.Bool("anim", false, "leave animations on (shots may catch a fade half way)")
+	mobile := flag.Bool("mobile", false, "run the phone scenario in mobile (Android) mode; use with -w 400 -h 860")
 	flag.Parse()
 	want := func(name string) bool {
 		return *only == "" || strings.Contains(","+*only+",", ","+name+",")
@@ -343,6 +344,11 @@ func main() {
 	a.SetDecorated(false)
 	d := &driver{a: a, host: winHost, router: new(input.Router), win: win, size: size, scale: float32(*scale), dir: *out, start: time.Now()}
 	os.MkdirAll(*out, 0o755)
+	if *mobile {
+		a.SetMobile(true)
+		d.mobileShots(want)
+		return
+	}
 
 	d.run(200 * time.Millisecond)
 	if want("home") {
