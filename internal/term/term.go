@@ -158,6 +158,37 @@ func (t *Terminal) reset() {
 	t.resetTabs()
 }
 
+// NewSession readies the terminal for the output of a new session on the
+// same screen, as after reconnecting. It leaves the alternate screen and
+// the modes the old session may have left on, and puts the cursor at the
+// start of the line below everything shown, so that the new output follows
+// the old instead of overwriting it: a program cut off mid-redraw, such as
+// a progress bar, may have left the cursor anywhere.
+func (t *Terminal) NewSession() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.gen++
+	if t.alt {
+		t.setAlt(false, false)
+		t.restoreCursor()
+	}
+	t.softReset()
+	t.lnm, t.reverseVideo = false, false
+	t.cursorShape, t.cursorBlink = CursorBlock, true
+	t.bracketedPaste, t.focusEvents = false, false
+	t.mouseMode, t.mouseSGR = MouseOff, false
+	for y := len(t.lines) - 1; y > t.y; y-- {
+		if !lineBlank(&t.lines[y]) {
+			t.y = y
+			break
+		}
+	}
+	if t.x > 0 || !lineBlank(&t.lines[t.y]) {
+		t.lineFeed()
+	}
+	t.x, t.wrapNext = 0, false
+}
+
 func (t *Terminal) resetTabs() {
 	t.tabs = make([]bool, t.cols)
 	for i := 8; i < t.cols; i += 8 {

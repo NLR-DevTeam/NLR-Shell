@@ -149,7 +149,7 @@ func (s *Session) Reconnect() {
 		s.Profile = p
 	}
 	s.q = newQueue()
-	s.Term.Write([]byte("\r\n\x1b[0m\x1b[?25h\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?2004l"))
+	s.Term.NewSession()
 	s.Start()
 }
 

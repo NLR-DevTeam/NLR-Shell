@@ -198,3 +198,56 @@ func BenchmarkWrite(b *testing.B) {
 		tm.Write(line)
 	}
 }
+
+// TestNewSession covers reconnecting on the same screen: the new output must
+// start below everything shown, whatever the old session left behind.
+func TestNewSession(t *testing.T) {
+	login := "Welcome\r\n$ "
+
+	// A progress bar moved the cursor up to redraw when the link dropped.
+	tm := New(20, 6, 100, Handler{})
+	tm.Write([]byte("$ docker pull app\r\nlayer1: 40%\r\nlayer2: 10%\r\nlayer3: 90%\x1b[3A"))
+	tm.NewSession()
+	tm.Write([]byte(login))
+	expect(t, tm, "$ docker pull app", "layer1: 40%", "layer2: 10%", "layer3: 90%", "Welcome", "$")
+
+	// A full-screen program was running: its screen goes away and the new
+	// output follows the shell prompt that started it.
+	tm = New(20, 6, 100, Handler{})
+	tm.Write([]byte("$ vim\r\n\x1b[?1049h\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[6 q\x1b[Hfile text\x1b[5;1H~"))
+	tm.NewSession()
+	tm.Write([]byte(login))
+	expect(t, tm, "$ vim", "Welcome", "$", "")
+	if tm.AltScreen() || tm.appCursor || tm.BracketedPaste() || tm.MouseMode() != MouseOff || tm.cursorShape != CursorBlock {
+		t.Fatalf("modes left on: alt=%v appCursor=%v paste=%v mouse=%v shape=%v",
+			tm.AltScreen(), tm.appCursor, tm.BracketedPaste(), tm.MouseMode(), tm.cursorShape)
+	}
+
+	// A scroll region and origin mode were left on: the new output scrolls
+	// the whole screen instead of a part of it.
+	tm = New(20, 4, 100, Handler{})
+	tm.Write([]byte("one\r\ntwo\x1b[1;2r\x1b[?6h\x1b[4h"))
+	tm.NewSession()
+	tm.Write([]byte("a\r\nb\r\nc"))
+	expect(t, tm, "two", "a", "b", "c")
+	if tm.HistLen() != 1 || tm.LineAt(0).Text() != "one" {
+		t.Fatalf("history after scrolling: %d lines", tm.HistLen())
+	}
+
+	// After "exit" the cursor already starts a blank line: no extra one.
+	tm = New(20, 6, 100, Handler{})
+	tm.Write([]byte("$ exit\r\nlogout\r\n"))
+	tm.NewSession()
+	tm.Write([]byte(login))
+	expect(t, tm, "$ exit", "logout", "Welcome", "$")
+
+	// A full screen scrolls the last line into the history.
+	tm = New(20, 2, 100, Handler{})
+	tm.Write([]byte("1\r\n2"))
+	tm.NewSession()
+	tm.Write([]byte("3"))
+	expect(t, tm, "2", "3")
+	if tm.HistLen() != 1 || tm.LineAt(0).Text() != "1" {
+		t.Fatalf("history: %d lines", tm.HistLen())
+	}
+}
