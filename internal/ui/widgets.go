@@ -554,9 +554,9 @@ type listFade struct {
 }
 
 // autoHideList is list with a scrollbar that only shows while the pointer
-// is over the list, while it scrolls, and for a moment after.
+// is over the list, while it scrolls, and for two seconds after.
 func (th *Theme) autoHideList(gtx layout.Context, l *widget.List, st *listFade, n int, el layout.ListElement) layout.Dimensions {
-	const linger = 900 * time.Millisecond
+	const linger = 2 * time.Second
 	hovered := st.hover.Update(gtx.Source)
 	if l.Position.First != st.first || l.Position.Offset != st.off {
 		st.first, st.off, st.active = l.Position.First, l.Position.Offset, gtx.Now

@@ -161,6 +161,12 @@ func (d *driver) mobileShots(want func(string) bool) {
 		a.OpenSettings()
 		d.run(200 * time.Millisecond)
 		d.shot("m-settings")
+		// The scroll bar shows while the list moves and hides two
+		// seconds later.
+		d.swipe(d.px(200), d.px(600), d.px(300))
+		d.shot("m-settings-scrolled")
+		d.run(2200 * time.Millisecond)
+		d.shot("m-settings-idle")
 		d.key(key.NameBack, 0)
 	}
 	if want("m-tunnels") {

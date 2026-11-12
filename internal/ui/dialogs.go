@@ -808,6 +808,7 @@ type settingsDialog struct {
 	closeClk, cancelClk, saveClk                widget.Clickable
 	errMsg                                      string
 	list                                        widget.List
+	fade                                        listFade
 
 	appearance, accent, rightClick string
 	background                     string
@@ -1060,8 +1061,10 @@ func (d *settingsDialog) Layout(gtx layout.Context, a *App) layout.Dimensions {
 	)
 	return a.dialogFrame(gtx, "设置", 520, &d.closeClk, d,
 		func(gtx layout.Context) layout.Dimensions {
-			// Scrolls when the window is too short for all settings.
-			return th.list(gtx, &d.list, len(rows), func(gtx layout.Context, i int) layout.Dimensions {
+			// Scrolls when the window is too short for all settings. The
+			// scroll bar floats over the rows, so it only shows while the
+			// list moves or the pointer is over it.
+			return th.autoHideList(gtx, &d.list, &d.fade, len(rows), func(gtx layout.Context, i int) layout.Dimensions {
 				gtx.Constraints.Min.X = gtx.Constraints.Max.X
 				return rows[i](gtx)
 			})
